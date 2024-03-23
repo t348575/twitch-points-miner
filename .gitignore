@@ -1,0 +1,5 @@
+/target
+*.env
+.cargo
+.vscode
+config.toml
