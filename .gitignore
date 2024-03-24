@@ -2,4 +2,4 @@
 *.env
 .cargo
 .vscode
-config.toml
+config.yaml

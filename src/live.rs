@@ -5,7 +5,7 @@ use flume::Sender;
 use tokio::time::interval;
 use twitch_api::types::UserId;
 
-use crate::{auth::Token, common};
+use crate::{auth::Token, common, config};
 
 #[derive(Debug, Clone)]
 pub enum Events {
@@ -15,7 +15,7 @@ pub enum Events {
 pub async fn run(
     token: Token,
     events_tx: Sender<Events>,
-    channels: Vec<(UserId, String)>,
+    channels: Vec<(UserId, String, config::Streamer)>,
 ) -> Result<()> {
     let twitch_api_token = token.into();
     let channels = channels.iter().map(|x| x.0.clone()).collect::<Vec<_>>();

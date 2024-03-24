@@ -21,6 +21,11 @@ futures = "0.3"
 async-trait = "0.1"
 clap = { version = "4.5", features = ["derive"] }
 color-eyre = "0.6"
-toml = "0.8"
 rand = "0.8"
+validator = { version = "0.17.0", features = ["derive"], git = "https://github.com/Keats/validator", branch = "master" }
+serde_yaml = "0.9"
 chrono = "0.4"
+axum = { version = "0.7", optional = true }
+
+[features]
+api = ["dep:axum"]

@@ -70,51 +70,51 @@ pub async fn live_channels(
         .collect())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct MakePrediction {
-    #[serde(rename = "operationName")]
-    operation_name: String,
-    extensions: serde_json::Value,
-    variables: Variables,
-}
-
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-struct Variables {
-    input: Input,
-}
-
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-struct Input {
-    #[serde(rename = "eventID")]
-    event_id: String,
-    #[serde(rename = "outcomeID")]
-    outcome_id: String,
-    points: u32,
-    #[serde(rename = "transactionID")]
-    transaction_id: String,
-}
-
-impl Default for MakePrediction {
-    fn default() -> Self {
-        Self {
-            operation_name: "MakePrediction".to_string(),
-            extensions: json!({
-                "persistedQuery": {
-                    "version": 1,
-                    "sha256Hash": "b44682ecc88358817009f20e69d75081b1e58825bb40aa53d5dbadcc17c881d8",
-                }
-            }),
-            variables: Default::default(),
-        }
-    }
-}
-
 pub async fn make_prediction(
     points: u32,
     event_id: String,
     outcome_id: String,
     token: &Token,
 ) -> Result<()> {
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct MakePrediction {
+        #[serde(rename = "operationName")]
+        operation_name: String,
+        extensions: serde_json::Value,
+        variables: Variables,
+    }
+
+    #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+    struct Variables {
+        input: Input,
+    }
+
+    #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+    struct Input {
+        #[serde(rename = "eventID")]
+        event_id: String,
+        #[serde(rename = "outcomeID")]
+        outcome_id: String,
+        points: u32,
+        #[serde(rename = "transactionID")]
+        transaction_id: String,
+    }
+
+    impl Default for MakePrediction {
+        fn default() -> Self {
+            Self {
+                operation_name: "MakePrediction".to_string(),
+                extensions: json!({
+                    "persistedQuery": {
+                        "version": 1,
+                        "sha256Hash": "b44682ecc88358817009f20e69d75081b1e58825bb40aa53d5dbadcc17c881d8",
+                    }
+                }),
+                variables: Default::default(),
+            }
+        }
+    }
+
     let mut pred = MakePrediction::default();
     pred.variables.input.event_id = event_id;
     pred.variables.input.outcome_id = outcome_id;
@@ -125,12 +125,9 @@ pub async fn make_prediction(
     let res = client
         .post("https://gql.twitch.tv/gql")
         .header("Client-Id", CLIENT_ID)
-        .header("Host", "id.twitch.tv")
-        .header("Origin", "https://android.tv.twitch.tv")
-        .header("Refer", "https://android.tv.twitch.tv")
         .header("User-Agent", USER_AGENT)
         .header("X-Device-Id", DEVICE_ID)
-        .header("Authorization", format!("bearer {}", token.access_token))
+        .header("Authorization", format!("OAuth {}", token.access_token))
         .json(&pred)
         .send()
         .await?;
@@ -141,6 +138,90 @@ pub async fn make_prediction(
     Ok(())
 }
 
+pub async fn get_channel_points(channel: String, token: &Token) -> Result<u32> {
+    #[derive(Serialize, Debug)]
+    struct GetChannelPoints {
+        #[serde(rename = "operationName")]
+        operation_name: String,
+        extensions: serde_json::Value,
+        variables: Variables,
+    }
+
+    #[derive(Serialize, Default, Debug)]
+    struct Variables {
+        #[serde(rename = "channelLogin")]
+        channel_login: String,
+    }
+
+    impl Default for GetChannelPoints {
+        fn default() -> Self {
+            Self {
+                operation_name: "ChannelPointsContext".to_string(),
+                extensions: json!({
+                    "persistedQuery": {
+                        "version": 1,
+                        "sha256Hash": "1530a003a7d374b0380b79db0be0534f30ff46e61cffa2bc0e2468a909fbc024",
+                    }
+                }),
+                variables: Default::default(),
+            }
+        }
+    }
+
+    let mut points = GetChannelPoints::default();
+    points.variables.channel_login = channel;
+
+    let client = reqwest::Client::new();
+    let res = client
+        .post("https://gql.twitch.tv/gql")
+        .header("Client-Id", CLIENT_ID)
+        .header("User-Agent", USER_AGENT)
+        .header("X-Device-Id", DEVICE_ID)
+        .header("Authorization", format!("OAuth {}", token.access_token))
+        .json(&points)
+        .send()
+        .await?;
+
+    if !res.status().is_success() {
+        println!("{:#?}", res);
+        return Err(eyre!("Failed to get channel points"));
+    }
+
+    let json = res.json::<serde_json::Value>().await?;
+    if !json.is_object() {
+        return Err(eyre!("Returned data is not an object"));
+    }
+
+    let data = json
+        .as_object()
+        .unwrap()
+        .get("data")
+        .ok_or(eyre!("Failed to get data"))?;
+    let community = data
+        .as_object()
+        .ok_or(eyre!("Failed to get data as object"))?
+        .get("community")
+        .ok_or(eyre!("Streamer does not exist"))?;
+    let _self = community
+        .as_object()
+        .unwrap()
+        .get("channel")
+        .unwrap()
+        .get("self")
+        .unwrap();
+    let balance = _self
+        .as_object()
+        .unwrap()
+        .get("communityPoints")
+        .unwrap()
+        .get("balance")
+        .unwrap()
+        .as_u64()
+        .unwrap();
+
+    Ok(balance as u32)
+}
+
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 pub async fn connect_twitch_ws(
@@ -149,7 +230,7 @@ pub async fn connect_twitch_ws(
 ) -> Result<(SplitSink<WsStream, Message>, SplitStream<WsStream>)> {
     let request = http::Request::builder()
         .uri(url)
-        .header("Authorization", format!("Bearer {}", access_token))
+        .header("Authorization", format!("OAuth {}", access_token))
         .header("Host", "localhost")
         .header("upgrade", "websocket")
         .header("connection", "upgrade")
@@ -184,4 +265,13 @@ pub async fn ping_loop(tx: Sender<String>) -> Result<()> {
         tx.send_async(ping.clone()).await?;
     }
     Ok(())
+}
+
+#[cfg(feature = "api")]
+pub async fn start_axum_server(address: String) -> axum::serve::Serve<axum::Router, axum::Router> {
+    use axum::{routing::get, Router};
+
+    let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+    let listener = tokio::net::TcpListener::bind(address).await.unwrap();
+    axum::serve(listener, app)
 }

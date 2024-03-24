@@ -1,0 +1,14 @@
+streamers:
+  example_streamer:
+    strategy: !smart
+      low_threshold: 0.0
+      high_threshold: 0.0
+      high_odds_attempt_rate: 0.0
+      points:
+        max_value: 0
+        percent: 0.0
+      high_odds_points:
+        max_value: 0
+        percent: 0.0
+    filters:
+    - !DelayPercentage 50.0

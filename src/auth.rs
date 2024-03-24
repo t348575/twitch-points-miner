@@ -118,7 +118,7 @@ pub async fn login() -> Result<()> {
         .header("Origin", "https://android.tv.twitch.tv")
         .header("Refer", "https://android.tv.twitch.tv")
         .header("User-Agent", USER_AGENT)
-        .header("X-Device-Id", "COF4t3ZVYpc87xfn8Jplkv5UQk8KVXvh")
+        .header("X-Device-Id", DEVICE_ID)
         .form(&std::collections::HashMap::from([
             ("client_id", CLIENT_ID),
             ("device_code", &flow.device_code),
