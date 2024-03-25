@@ -1,6 +1,6 @@
 # twitch-points-miner ![Visits](https://nkvnu62257.execute-api.ap-south-1.amazonaws.com/production?repo=twitch-points-miner)
 
-A twitch points miner inspired by [Twitch-Channel-Points-Miner-v2](https://github.com/Tkd-Alex/Twitch-Channel-Points-Miner-v2), except its lightweight, the docker image is just 8.2 MB.
+A twitch points miner inspired by [Twitch-Channel-Points-Miner-v2](https://github.com/rdavydov/Twitch-Channel-Points-Miner-v2), except its lightweight, the docker image is just 8.2 MB.
 
 ## Features
 * Auto place bets on predictions
