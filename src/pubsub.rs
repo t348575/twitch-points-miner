@@ -11,9 +11,9 @@ use flume::{Receiver, Sender};
 use futures::StreamExt;
 use rand::{
     distributions::{Alphanumeric, DistString},
-    rngs::ThreadRng,
     Rng,
 };
+use serde::Serialize;
 use tokio::{spawn, sync::RwLock};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, info, warn};
@@ -33,31 +33,33 @@ use crate::{
     live::Events,
 };
 
-struct PubSub {
-    streamers: HashMap<UserId, Streamer>,
+#[derive(Debug, Clone, Serialize)]
+pub struct PubSub {
+    pub streamers: HashMap<UserId, Streamer>,
+    pub simulate: bool,
 }
 
-#[derive(Debug, Clone)]
-struct Streamer {
-    name: String,
-    live: bool,
-    predictions: HashMap<String, (PredictionEvent, bool)>,
-    config: config::Streamer,
-    points: u32,
-    last_points_refresh: Instant,
+#[derive(Debug, Clone, Serialize)]
+pub struct Streamer {
+    pub name: String,
+    pub live: bool,
+    pub predictions: HashMap<String, (PredictionEvent, bool)>,
+    pub config: config::Streamer,
+    pub points: u32,
+    #[serde(skip)]
+    pub last_points_refresh: Instant,
 }
 
 pub async fn run(
     token: Token,
     config: Config,
     events_rx: Receiver<Events>,
-    channels: Vec<(UserId, String, config::Streamer)>,
+    pubsub: Arc<RwLock<PubSub>>,
 ) -> Result<()> {
     let (write, mut read) =
         connect_twitch_ws("wss://pubsub-edge.twitch.tv", &token.access_token).await?;
     info!("Connected to pubsub");
 
-    let pubsub = Arc::new(RwLock::new(PubSub::new(channels)));
     let (tx, rx) = flume::unbounded();
     spawn(writer(rx, write));
     spawn(ping_loop(tx.clone()));
@@ -67,14 +69,24 @@ pub async fn run(
         tx.clone(),
         token.access_token.clone(),
     ));
-    let mut rng = rand::thread_rng();
+
+    {
+        let mut writer = pubsub.write().await;
+        for (_, s) in writer.streamers.iter_mut() {
+            let points = get_channel_points(s.name.clone(), &token)
+                .await
+                .context("Get channel points")?;
+            s.points = points;
+            s.last_points_refresh = Instant::now();
+        }
+    }
 
     while let Some(Ok(msg)) = read.next().await {
         if let Message::Text(m) = msg {
             match Response::parse(&m) {
                 Ok(r) => {
                     if let Response::Message { data } = r {
-                        handle_response(data, &pubsub, &mut rng, &token)
+                        handle_response(data, &pubsub, &token)
                             .await
                             .context("Handle pubsub response")?;
                     }
@@ -120,7 +132,7 @@ async fn event_listener(
 }
 
 impl PubSub {
-    pub fn new(channels: Vec<(UserId, String, config::Streamer)>) -> PubSub {
+    pub fn new(channels: Vec<(UserId, String, config::Streamer)>, simulate: bool) -> PubSub {
         let streamers = channels
             .into_iter()
             .map(|(id, name, config)| {
@@ -137,14 +149,26 @@ impl PubSub {
                 )
             })
             .collect();
-        PubSub { streamers }
+        PubSub {
+            streamers,
+            simulate,
+        }
+    }
+
+    #[cfg(feature = "api")]
+    pub fn get_by_name(&self, name: &str) -> Option<&Streamer> {
+        self.streamers.values().find(|s| s.name == name)
+    }
+
+    #[cfg(feature = "api")]
+    pub fn get_by_name_mut(&mut self, name: &str) -> Option<&mut Streamer> {
+        self.streamers.values_mut().find(|s| s.name == name)
     }
 }
 
 async fn handle_response(
     data: TopicData,
     pubsub: &Arc<RwLock<PubSub>>,
-    rng: &mut ThreadRng,
     token: &Token,
 ) -> Result<()> {
     match data {
@@ -160,8 +184,8 @@ async fn handle_response(
                     .predictions
                     .contains_key(event.id.as_str())
             {
-                info!("Prediction {} started", event.id);
                 let s = writer.streamers.get_mut(&streamer).unwrap();
+                info!("Prediction {} started", event.id);
                 s.predictions.insert(event.id.clone(), (event, false));
             } else if event.ended_at.is_some() {
                 debug!("Prediction {} ended", event.id);
@@ -191,12 +215,12 @@ async fn handle_response(
                     s.points = points;
                     s.last_points_refresh = Instant::now();
                 }
-                if let Some((outcome_id, points)) = prediction_logic(s, event.id.clone(), rng)
+                if let Some((outcome_id, points)) = prediction_logic(&s, &event.id)
                     .await
                     .context("Prediction logic")?
                 {
                     info!("Prediction {} with {} points", event.id, points);
-                    make_prediction(points, event.id.clone(), outcome_id, token)
+                    make_prediction(points, event.id.clone(), outcome_id, token, writer.simulate)
                         .await
                         .context("Make prediction")?;
                     let mut writer = pubsub.write().await;
@@ -210,12 +234,11 @@ async fn handle_response(
     Ok(())
 }
 
-async fn prediction_logic(
-    streamer: Streamer,
-    event_id: String,
-    rng: &mut ThreadRng,
+pub async fn prediction_logic(
+    streamer: &Streamer,
+    event_id: &String,
 ) -> Result<Option<(String, u32)>> {
-    let prediction = streamer.predictions.get(&event_id);
+    let prediction = streamer.predictions.get(event_id);
     if prediction.is_none() {
         return Ok(None);
     }
@@ -228,7 +251,7 @@ async fn prediction_logic(
         }
     }
 
-    match streamer.config.strategy {
+    match &streamer.config.strategy {
         config::strategy::Strategy::Smart(s) => {
             if prediction.0.outcomes.len() < 2 {
                 return Ok(None);
@@ -251,6 +274,7 @@ async fn prediction_logic(
                 odds_percentage.push(if odds == 0.0 { 0.0 } else { 100.0 / odds });
             }
 
+            let mut rng = rand::thread_rng();
             for (idx, p) in odds_percentage.into_iter().enumerate() {
                 let value = if p > s.low_threshold && p < s.high_threshold {
                     s.points.value(streamer.points)

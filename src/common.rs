@@ -75,7 +75,12 @@ pub async fn make_prediction(
     event_id: String,
     outcome_id: String,
     token: &Token,
+    simulate: bool,
 ) -> Result<()> {
+    if simulate {
+        return Ok(());
+    }
+
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct MakePrediction {
         #[serde(rename = "operationName")]
@@ -265,13 +270,4 @@ pub async fn ping_loop(tx: Sender<String>) -> Result<()> {
         tx.send_async(ping.clone()).await?;
     }
     Ok(())
-}
-
-#[cfg(feature = "api")]
-pub async fn start_axum_server(address: String) -> axum::serve::Serve<axum::Router, axum::Router> {
-    use axum::{routing::get, Router};
-
-    let app = Router::new().route("/", get(|| async { "Hello, World!" }));
-    let listener = tokio::net::TcpListener::bind(address).await.unwrap();
-    axum::serve(listener, app)
 }

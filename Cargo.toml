@@ -6,14 +6,13 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dialoguer = "0.11.0"
-reqwest = { version = "0.11.2", features = ["cookies", "json"] }
+reqwest = { version = "0.11.2", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio-tungstenite = { version = "0.21", features = ["rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
 http = "1.1.0"
 twitch_api = { features = ["reqwest", "client", "helix", "pubsub", "unsupported", "typed-builder"], git = "https://github.com/t348575/twitch_api", branch = "hidden_pubsubs" }
 flume = "0.11"
@@ -25,7 +24,11 @@ rand = "0.8"
 validator = { version = "0.17.0", features = ["derive"], git = "https://github.com/Keats/validator", branch = "master" }
 serde_yaml = "0.9"
 chrono = "0.4"
-axum = { version = "0.7", optional = true }
+axum = { version = "0.7", optional = true, features = ["macros"]}
 
 [features]
 api = ["dep:axum"]
+
+[profile.release]
+opt-level = 's'
+lto = true

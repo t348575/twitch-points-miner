@@ -1,5 +1,6 @@
 use color_eyre::{eyre::Context, Result};
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncReadExt;
 use twitch_api::{
     helix::Scope,
     twitch_oauth2::{
@@ -102,14 +103,13 @@ pub async fn login() -> Result<()> {
         ])).send().await.unwrap();
 
     let flow = res.json::<LoginFlowStart>().await.unwrap();
-    while !dialoguer::Confirm::new()
-        .with_prompt(format!(
-            "Open https://www.twitch.tv/activate and enter this code: {}",
-            flow.user_code
-        ))
-        .interact()
-        .unwrap()
-    {}
+
+    println!(
+        "Open https://www.twitch.tv/activate and enter this code: {}\nPress enter once done!",
+        flow.user_code
+    );
+    let mut buf = [0u8; 1];
+    tokio::io::stdin().read_exact(&mut buf).await?;
 
     let res = client
         .post("https://id.twitch.tv/oauth2/token")

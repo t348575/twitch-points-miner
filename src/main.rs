@@ -1,8 +1,10 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use clap::Parser;
 use color_eyre::eyre::{eyre, Context, Result};
-use tokio::{fs, join};
+use tokio::sync::RwLock;
+use tokio::{fs, spawn};
 use tracing::info;
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
@@ -10,6 +12,8 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 use validator::Validate;
 
+#[cfg(feature = "api")]
+mod api;
 mod auth;
 mod common;
 mod config;
@@ -26,6 +30,9 @@ struct Args {
     #[cfg(feature = "api")]
     #[arg(short, long, default_value_t = String::from("0.0.0.0:3000"))]
     address: String,
+    /// Simulate
+    #[arg(short, long, default_value_t = false)]
+    simulate: bool,
 }
 
 #[tokio::main]
@@ -93,31 +100,27 @@ async fn main() -> Result<()> {
         .collect::<Vec<_>>();
     let (events_tx, events_rx) = flume::unbounded();
 
-    #[cfg(feature = "api")]
-    let axum_server = common::start_axum_server(args.address).await;
-
     println!("Everything ok, starting twitch pubsub");
 
-    #[cfg(not(feature = "api"))]
-    let res = join!(
-        pubsub::run(token.clone(), c, events_rx, channels.clone()),
-        live::run(token, events_tx, channels)
-    );
+    let pubsub_data = Arc::new(RwLock::new(pubsub::PubSub::new(
+        channels.clone(),
+        args.simulate,
+    )));
+    let pubsub = spawn(pubsub::run(
+        token.clone(),
+        c,
+        events_rx,
+        pubsub_data.clone(),
+    ));
+    let live = spawn(live::run(token.clone(), events_tx, channels));
 
     #[cfg(feature = "api")]
-    use std::future::IntoFuture;
-    #[cfg(feature = "api")]
-    let res = join!(
-        pubsub::run(token.clone(), c, events_rx, channels.clone()),
-        live::run(token, events_tx, channels),
-        axum_server.into_future()
-    );
-
-    res.0.context("Pubsub")?;
-    res.1.context("Live check")?;
+    let axum_server = api::get_api_server(args.address, pubsub_data, Arc::new(token)).await;
 
     #[cfg(feature = "api")]
-    res.2.context("Web API")?;
+    axum_server.await?;
+    pubsub.await??;
+    live.await??;
 
     Ok(())
 }
