@@ -81,6 +81,8 @@ impl Smart {
         self.low_threshold /= 100.0;
         self.high_threshold /= 100.0;
         self.high_odds_attempt_rate /= 100.0;
+        self.points.normalize();
+        self.high_odds_points.normalize();
     }
 }
 
@@ -103,6 +105,10 @@ impl Points {
                 (self.percent * current_points as f64) as u32
             }
         }
+    }
+
+    pub fn normalize(&mut self) {
+        self.percent /= 100.0;
     }
 }
 

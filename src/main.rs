@@ -105,8 +105,9 @@ async fn main() -> Result<()> {
     let pubsub_data = Arc::new(RwLock::new(pubsub::PubSub::new(
         channels.clone(),
         args.simulate,
+        token.clone(),
     )));
-    let pubsub = spawn(pubsub::run(
+    let pubsub = spawn(pubsub::PubSub::run(
         token.clone(),
         c,
         events_rx,

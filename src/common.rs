@@ -72,7 +72,7 @@ pub async fn live_channels(
 
 pub async fn make_prediction(
     points: u32,
-    event_id: String,
+    event_id: &str,
     outcome_id: String,
     token: &Token,
     simulate: bool,
@@ -82,22 +82,24 @@ pub async fn make_prediction(
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    struct MakePrediction {
+    struct MakePrediction<'a> {
         #[serde(rename = "operationName")]
         operation_name: String,
         extensions: serde_json::Value,
-        variables: Variables,
+        #[serde(borrow)]
+        variables: Variables<'a>,
     }
 
     #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-    struct Variables {
-        input: Input,
+    struct Variables<'a> {
+        #[serde(borrow)]
+        input: Input<'a>,
     }
 
     #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-    struct Input {
+    struct Input<'a> {
         #[serde(rename = "eventID")]
-        event_id: String,
+        event_id: &'a str,
         #[serde(rename = "outcomeID")]
         outcome_id: String,
         points: u32,
@@ -105,7 +107,7 @@ pub async fn make_prediction(
         transaction_id: String,
     }
 
-    impl Default for MakePrediction {
+    impl<'a> Default for MakePrediction<'a> {
         fn default() -> Self {
             Self {
                 operation_name: "MakePrediction".to_string(),

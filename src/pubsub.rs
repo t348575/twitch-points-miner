@@ -5,7 +5,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use chrono::{DateTime, Local};
 use color_eyre::{eyre::Context, Result};
 use flume::{Receiver, Sender};
 use futures::StreamExt;
@@ -29,7 +28,7 @@ use twitch_api::{
 use crate::{
     auth::Token,
     common::{connect_twitch_ws, get_channel_points, make_prediction, ping_loop, writer},
-    config::{self, Config},
+    config::{self, filters::filter_matches, Config},
     live::Events,
 };
 
@@ -37,6 +36,8 @@ use crate::{
 pub struct PubSub {
     pub streamers: HashMap<UserId, Streamer>,
     pub simulate: bool,
+    #[serde(skip)]
+    token: Token,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -48,54 +49,6 @@ pub struct Streamer {
     pub points: u32,
     #[serde(skip)]
     pub last_points_refresh: Instant,
-}
-
-pub async fn run(
-    token: Token,
-    config: Config,
-    events_rx: Receiver<Events>,
-    pubsub: Arc<RwLock<PubSub>>,
-) -> Result<()> {
-    let (write, mut read) =
-        connect_twitch_ws("wss://pubsub-edge.twitch.tv", &token.access_token).await?;
-    info!("Connected to pubsub");
-
-    let (tx, rx) = flume::unbounded();
-    spawn(writer(rx, write));
-    spawn(ping_loop(tx.clone()));
-    spawn(event_listener(
-        pubsub.clone(),
-        events_rx,
-        tx.clone(),
-        token.access_token.clone(),
-    ));
-
-    {
-        let mut writer = pubsub.write().await;
-        for (_, s) in writer.streamers.iter_mut() {
-            let points = get_channel_points(s.name.clone(), &token)
-                .await
-                .context("Get channel points")?;
-            s.points = points;
-            s.last_points_refresh = Instant::now();
-        }
-    }
-
-    while let Some(Ok(msg)) = read.next().await {
-        if let Message::Text(m) = msg {
-            match Response::parse(&m) {
-                Ok(r) => {
-                    if let Response::Message { data } = r {
-                        handle_response(data, &pubsub, &token)
-                            .await
-                            .context("Handle pubsub response")?;
-                    }
-                }
-                Err(err) => warn!("Failed to parse message {:#?}", err),
-            }
-        }
-    }
-    Ok(())
 }
 
 async fn event_listener(
@@ -132,7 +85,11 @@ async fn event_listener(
 }
 
 impl PubSub {
-    pub fn new(channels: Vec<(UserId, String, config::Streamer)>, simulate: bool) -> PubSub {
+    pub fn new(
+        channels: Vec<(UserId, String, config::Streamer)>,
+        simulate: bool,
+        token: Token,
+    ) -> PubSub {
         let streamers = channels
             .into_iter()
             .map(|(id, name, config)| {
@@ -152,6 +109,7 @@ impl PubSub {
         PubSub {
             streamers,
             simulate,
+            token,
         }
     }
 
@@ -164,79 +122,129 @@ impl PubSub {
     pub fn get_by_name_mut(&mut self, name: &str) -> Option<&mut Streamer> {
         self.streamers.values_mut().find(|s| s.name == name)
     }
-}
 
-async fn handle_response(
-    data: TopicData,
-    pubsub: &Arc<RwLock<PubSub>>,
-    token: &Token,
-) -> Result<()> {
-    match data {
-        TopicData::PredictionsChannelV1 { topic, reply } => {
-            debug!("Got reply {:#?}", topic);
-            let event = reply.data.event;
-            let streamer = UserId::from_str(&event.channel_id)?;
+    pub async fn run(
+        token: Token,
+        config: Config,
+        events_rx: Receiver<Events>,
+        pubsub: Arc<RwLock<PubSub>>,
+    ) -> Result<()> {
+        let (write, mut read) =
+            connect_twitch_ws("wss://pubsub-edge.twitch.tv", &token.access_token).await?;
+        info!("Connected to pubsub");
 
+        let (tx, rx) = flume::unbounded();
+        spawn(writer(rx, write));
+        spawn(ping_loop(tx.clone()));
+        spawn(event_listener(
+            pubsub.clone(),
+            events_rx,
+            tx.clone(),
+            token.access_token.clone(),
+        ));
+
+        {
             let mut writer = pubsub.write().await;
-            if event.ended_at.is_none()
-                && writer.streamers.contains_key(&streamer)
-                && !writer.streamers[&streamer]
-                    .predictions
-                    .contains_key(event.id.as_str())
-            {
-                let s = writer.streamers.get_mut(&streamer).unwrap();
-                info!("Prediction {} started", event.id);
-                s.predictions.insert(event.id.clone(), (event, false));
-            } else if event.ended_at.is_some() {
-                debug!("Prediction {} ended", event.id);
-                info!("Prediction {} ended", event.id);
-                writer
-                    .streamers
-                    .get_mut(&streamer)
-                    .unwrap()
-                    .predictions
-                    .remove(event.id.as_str());
-            } else if writer.streamers.contains_key(&streamer)
-                && writer.streamers[&streamer]
-                    .predictions
-                    .contains_key(event.id.as_str())
-            {
-                info!("Prediction {} updated", event.id);
-                let s = writer.streamers.get(&streamer).unwrap().clone();
-
-                if s.predictions[event.id.as_str()].1 {
-                    return Ok(());
-                }
-                if s.last_points_refresh.elapsed() > Duration::from_secs(5) {
-                    let points = get_channel_points(s.name.clone(), token)
-                        .await
-                        .context("Get channel points")?;
-                    let s = writer.streamers.get_mut(&streamer).unwrap();
-                    s.points = points;
-                    s.last_points_refresh = Instant::now();
-                }
-                if let Some((outcome_id, points)) = prediction_logic(&s, &event.id)
+            for (_, s) in writer.streamers.iter_mut() {
+                let points = get_channel_points(s.name.clone(), &token)
                     .await
-                    .context("Prediction logic")?
-                {
-                    info!("Prediction {} with {} points", event.id, points);
-                    make_prediction(points, event.id.clone(), outcome_id, token, writer.simulate)
-                        .await
-                        .context("Make prediction")?;
-                    let mut writer = pubsub.write().await;
-                    let s = writer.streamers.get_mut(&streamer).unwrap();
-                    s.predictions.get_mut(event.id.as_str()).unwrap().1 = true;
+                    .context("Get channel points")?;
+                s.points = points;
+                s.last_points_refresh = Instant::now();
+            }
+        }
+
+        while let Some(Ok(msg)) = read.next().await {
+            if let Message::Text(m) = msg {
+                match Response::parse(&m) {
+                    Ok(r) => {
+                        if let Response::Message { data } = r {
+                            let mut writer = pubsub.write().await;
+                            writer
+                                .handle_response(data)
+                                .await
+                                .context("Handle pubsub response")?;
+                        }
+                    }
+                    Err(err) => warn!("Failed to parse message {:#?}", err),
                 }
             }
         }
-        _ => {}
+        Ok(())
     }
-    Ok(())
+
+    async fn handle_response(&mut self, data: TopicData) -> Result<()> {
+        match data {
+            TopicData::PredictionsChannelV1 { topic, reply } => {
+                debug!("Got reply {:#?}", topic);
+                let event = reply.data.event;
+                let streamer = UserId::from_str(&event.channel_id)?;
+
+                if event.ended_at.is_none()
+                    && self.streamers.contains_key(&streamer)
+                    && !self.streamers[&streamer]
+                        .predictions
+                        .contains_key(event.id.as_str())
+                {
+                    let s = self.streamers.get_mut(&streamer).unwrap();
+                    info!("Prediction {} started", event.id);
+                    let event_id = event.id.clone();
+                    s.predictions.insert(event.id.clone(), (event, false));
+                    self.try_prediction(&streamer, &event_id).await?;
+                } else if event.ended_at.is_some() {
+                    info!("Prediction {} ended", event.id);
+                    self.streamers
+                        .get_mut(&streamer)
+                        .unwrap()
+                        .predictions
+                        .remove(event.id.as_str());
+                } else if self.streamers.contains_key(&streamer)
+                    && self.streamers[&streamer]
+                        .predictions
+                        .contains_key(event.id.as_str())
+                {
+                    info!("Prediction {} updated", event.id);
+                    self.try_prediction(&streamer, &event.id).await?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn try_prediction(&mut self, streamer: &UserId, event_id: &str) -> Result<()> {
+        let s = self.streamers.get(streamer).unwrap().clone();
+
+        if s.predictions[event_id].1 {
+            return Ok(());
+        }
+        if s.last_points_refresh.elapsed() > Duration::from_secs(5) {
+            let points = get_channel_points(s.name.clone(), &self.token)
+                .await
+                .context("Get channel points")?;
+            let s = self.streamers.get_mut(streamer).unwrap();
+            s.points = points;
+            s.last_points_refresh = Instant::now();
+        }
+
+        if let Some((outcome_id, points)) = prediction_logic(&s, event_id)
+            .await
+            .context("Prediction logic")?
+        {
+            info!("Attempting prediction {}, with points {}", event_id, points);
+            make_prediction(points, event_id, outcome_id, &self.token, self.simulate)
+                .await
+                .context("Make prediction")?;
+            let s = self.streamers.get_mut(streamer).unwrap();
+            s.predictions.get_mut(event_id).unwrap().1 = true;
+        }
+        Ok(())
+    }
 }
 
 pub async fn prediction_logic(
     streamer: &Streamer,
-    event_id: &String,
+    event_id: &str,
 ) -> Result<Option<(String, u32)>> {
     let prediction = streamer.predictions.get(event_id);
     if prediction.is_none() {
@@ -245,7 +253,7 @@ pub async fn prediction_logic(
 
     let prediction = prediction.unwrap();
     for filter in &streamer.config.filters {
-        if filter_matches(&prediction.0, &filter, &streamer).context("Checking filter")? {
+        if !filter_matches(&prediction.0, &filter, &streamer).context("Checking filter")? {
             info!("Filter matches {:#?}", filter);
             return Ok(None);
         }
@@ -276,9 +284,12 @@ pub async fn prediction_logic(
 
             let mut rng = rand::thread_rng();
             for (idx, p) in odds_percentage.into_iter().enumerate() {
+                debug!("Odds for {}: {}", prediction.0.outcomes[idx].id, p);
                 let value = if p > s.low_threshold && p < s.high_threshold {
+                    debug!("Trying for low odds");
                     s.points.value(streamer.points)
                 } else if rng.gen_bool(s.high_odds_attempt_rate) {
+                    debug!("Trying for high odds");
                     s.high_odds_points.value(streamer.points)
                 } else {
                     0
@@ -290,32 +301,4 @@ pub async fn prediction_logic(
         }
     }
     Ok(None)
-}
-
-fn filter_matches(
-    prediction: &PredictionEvent,
-    filter: &config::Filter,
-    _: &Streamer,
-) -> Result<bool> {
-    let res = match filter {
-        config::Filter::TotalUsers(t) => {
-            prediction.outcomes.iter().fold(0, |a, b| a + b.total_users) as u32 >= *t
-        }
-        config::Filter::DelaySeconds(d) => {
-            let created_at: DateTime<Local> =
-                DateTime::parse_from_rfc3339(prediction.created_at.as_str())?
-                    .try_into()
-                    .unwrap();
-            (chrono::Local::now() - created_at).num_seconds() as u32 >= *d
-        }
-        config::Filter::DelayPercentage(d) => {
-            let created_at: DateTime<Local> =
-                DateTime::parse_from_rfc3339(prediction.created_at.as_str())?
-                    .try_into()
-                    .unwrap();
-            let d = prediction.prediction_window_seconds as f64 * (d / 100.0);
-            (chrono::Local::now() - created_at).num_seconds() as f64 >= d
-        }
-    };
-    Ok(res)
 }

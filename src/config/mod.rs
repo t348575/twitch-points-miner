@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
+pub mod filters;
 pub mod strategy;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,12 +17,5 @@ pub struct Streamer {
     #[validate(nested)]
     pub strategy: strategy::Strategy,
     #[validate(length(min = 0))]
-    pub filters: Vec<Filter>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Filter {
-    TotalUsers(u32),
-    DelaySeconds(u32),
-    DelayPercentage(f64),
+    pub filters: Vec<filters::Filter>,
 }

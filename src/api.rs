@@ -132,7 +132,7 @@ async fn place_bet(
     simulate: bool,
 ) -> Result<()> {
     info!("Prediction {} with {} points", event_id, points);
-    common::make_prediction(points, event_id, outcome_id, token, simulate)
+    common::make_prediction(points, &event_id, outcome_id, token, simulate)
         .await
         .context("Make prediction")?;
     Ok(())
