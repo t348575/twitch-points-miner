@@ -5,15 +5,16 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
-    serve::Serve,
+    serve::WithGracefulShutdown,
     Extension, Json, Router,
 };
 use color_eyre::{
     eyre::{Context, Report},
     Result,
 };
+use futures::Future;
 use serde::Deserialize;
-use tokio::sync::RwLock;
+use tokio::{signal, sync::RwLock};
 use tracing::info;
 
 use crate::{
@@ -28,7 +29,7 @@ pub async fn get_api_server(
     address: String,
     pubsub: ApiState,
     token: Arc<Token>,
-) -> Serve<Router, Router> {
+) -> WithGracefulShutdown<Router, Router, impl Future<Output = ()>> {
     let app = Router::new()
         .route("/", get(get_all_streamers))
         .route("/:streamer", get(get_streamer))
@@ -37,7 +38,7 @@ pub async fn get_api_server(
         .with_state(pubsub);
 
     let listener = tokio::net::TcpListener::bind(address).await.unwrap();
-    axum::serve(listener, app)
+    axum::serve(listener, app).with_graceful_shutdown(shutdown_signal())
 }
 
 async fn get_all_streamers(State(data): State<ApiState>) -> Json<pubsub::PubSub> {
@@ -136,4 +137,24 @@ async fn place_bet(
         .await
         .context("Make prediction")?;
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
 }

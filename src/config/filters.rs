@@ -3,7 +3,7 @@ use color_eyre::Result;
 use serde::{Deserialize, Serialize};
 use twitch_api::pubsub::predictions::Event as PredictionEvent;
 
-use crate::pubsub::Streamer;
+use crate::types::Streamer;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Filter {

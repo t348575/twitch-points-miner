@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use color_eyre::eyre::{eyre, Context, Result};
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 use tokio::{fs, spawn};
 use tracing::info;
 use tracing_subscriber::fmt;
@@ -12,6 +12,9 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 use validator::Validate;
 
+use crate::config::Normalize;
+use crate::types::StarterInformation;
+
 #[cfg(feature = "api")]
 mod api;
 mod auth;
@@ -19,6 +22,7 @@ mod common;
 mod config;
 mod live;
 mod pubsub;
+mod types;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -33,6 +37,9 @@ struct Args {
     /// Simulate
     #[arg(short, long, default_value_t = false)]
     simulate: bool,
+    /// Token file
+    #[arg(short, long, default_value_t = String::from("tokens.json"))]
+    token: String,
 }
 
 #[tokio::main]
@@ -45,9 +52,9 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    if !Path::new("tokens.json").exists() {
+    if !Path::new(&args.token).exists() {
         info!("Starting login sequence");
-        auth::login().await?;
+        auth::login(&args.token).await?;
     }
 
     let mut c: config::Config = serde_yaml::from_str(
@@ -68,19 +75,18 @@ async fn main() -> Result<()> {
     }
 
     let token: auth::Token = serde_json::from_str(
-        &fs::read_to_string("tokens.json")
+        &fs::read_to_string(args.token)
             .await
             .context("Reading tokens file")?,
     )
     .context("Parsing tokens file")?;
     info!("Parsed tokens file");
 
-    let channels = common::get_channel_ids(
-        &c.streamers.keys().map(|s| s.as_str()).collect::<Vec<_>>(),
-        &token.clone().into(),
-    )
-    .await
-    .wrap_err_with(|| "Could not get streamer list. Is your token valid?")?;
+    let streamer_names = c.streamers.keys().map(|s| s.as_str()).collect::<Vec<_>>();
+
+    let channels = common::get_channel_ids(&streamer_names, &token.clone().into())
+        .await
+        .wrap_err_with(|| "Could not get streamer list. Is your token valid?")?;
     info!("Got streamer list");
 
     for (idx, id) in channels.iter().enumerate() {
@@ -96,9 +102,9 @@ async fn main() -> Result<()> {
         .into_iter()
         .map(|x| x.unwrap())
         .zip(c.streamers.clone())
-        .map(|x| (x.0, x.1 .0, x.1 .1))
+        .map(|x| StarterInformation::init(x))
         .collect::<Vec<_>>();
-    let (events_tx, events_rx) = flume::unbounded();
+    let (events_tx, events_rx) = mpsc::channel(128);
 
     println!("Everything ok, starting twitch pubsub");
 

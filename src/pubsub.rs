@@ -2,24 +2,29 @@ use std::{
     collections::HashMap,
     str::FromStr,
     sync::Arc,
+    thread::sleep,
     time::{Duration, Instant},
 };
 
 use color_eyre::{eyre::Context, Result};
-use flume::{Receiver, Sender};
 use futures::StreamExt;
 use rand::{
     distributions::{Alphanumeric, DistString},
     Rng,
 };
 use serde::Serialize;
-use tokio::{spawn, sync::RwLock};
+use tokio::{
+    spawn,
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        RwLock,
+    },
+};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, info, warn};
 use twitch_api::{
     pubsub::{
-        listen_command,
-        predictions::{Event as PredictionEvent, PredictionsChannelV1},
+        community_points::CommunityPointsUserV1, listen_command, predictions::PredictionsChannelV1,
         unlisten_command, Response, TopicData, Topics,
     },
     types::UserId,
@@ -30,6 +35,7 @@ use crate::{
     common::{connect_twitch_ws, get_channel_points, make_prediction, ping_loop, writer},
     config::{self, filters::filter_matches, Config},
     live::Events,
+    types::{StarterInformation, Streamer},
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -38,68 +44,22 @@ pub struct PubSub {
     pub simulate: bool,
     #[serde(skip)]
     token: Token,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct Streamer {
-    pub name: String,
-    pub live: bool,
-    pub predictions: HashMap<String, (PredictionEvent, bool)>,
-    pub config: config::Streamer,
-    pub points: u32,
     #[serde(skip)]
-    pub last_points_refresh: Instant,
-}
-
-async fn event_listener(
-    pubsub: Arc<RwLock<PubSub>>,
-    events_rx: Receiver<Events>,
-    tx: Sender<String>,
-    access_token: String,
-) -> Result<()> {
-    while let Ok(events) = events_rx.recv_async().await {
-        let mut writer = pubsub.write().await;
-        match events {
-            Events::Live(id, status) => {
-                if let Some(s) = writer.streamers.get_mut(&id) {
-                    s.live = status;
-                    info!("Live status of {} is {}", s.name, status);
-
-                    let nonce = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
-                    let topics = &[Topics::PredictionsChannelV1(PredictionsChannelV1 {
-                        channel_id: id.as_str().parse()?,
-                    })];
-                    let cmd = if s.live {
-                        listen_command(topics, access_token.as_str(), nonce.as_str())
-                            .context("Generate listen command")?
-                    } else {
-                        unlisten_command(topics, nonce.as_str())
-                            .context("Generate unlisten command")?
-                    };
-                    tx.send_async(cmd).await?;
-                }
-            }
-        }
-    }
-    Ok(())
+    spade_url: Option<String>,
 }
 
 impl PubSub {
-    pub fn new(
-        channels: Vec<(UserId, String, config::Streamer)>,
-        simulate: bool,
-        token: Token,
-    ) -> PubSub {
+    pub fn new(channels: Vec<StarterInformation>, simulate: bool, token: Token) -> PubSub {
         let streamers = channels
             .into_iter()
-            .map(|(id, name, config)| {
+            .map(|x| {
                 (
-                    id,
+                    x.user_id,
                     Streamer {
-                        name,
+                        name: x.name,
                         live: false,
                         predictions: HashMap::new(),
-                        config,
+                        config: x.config,
                         points: 0,
                         last_points_refresh: Instant::now(),
                     },
@@ -110,6 +70,7 @@ impl PubSub {
             streamers,
             simulate,
             token,
+            spade_url: None,
         }
     }
 
@@ -133,7 +94,7 @@ impl PubSub {
             connect_twitch_ws("wss://pubsub-edge.twitch.tv", &token.access_token).await?;
         info!("Connected to pubsub");
 
-        let (tx, rx) = flume::unbounded();
+        let (tx, rx) = mpsc::channel(128);
         spawn(writer(rx, write));
         spawn(ping_loop(tx.clone()));
         spawn(event_listener(
@@ -142,6 +103,7 @@ impl PubSub {
             tx.clone(),
             token.access_token.clone(),
         ));
+        spawn(view_points(pubsub.clone()));
 
         {
             let mut writer = pubsub.write().await;
@@ -207,6 +169,17 @@ impl PubSub {
                     self.try_prediction(&streamer, &event.id).await?;
                 }
             }
+            TopicData::CommunityPointsUserV1 { topic, reply } => {
+                debug!("Got reply {:#?}", topic);
+                let streamer = UserId::from_str(&reply.data.channel_id)?;
+
+                if self.streamers.contains_key(&streamer) {
+                    debug!("Channel points updated for {}", streamer);
+                    let s = self.streamers.get_mut(&streamer).unwrap();
+                    s.points = reply.data.balance.balance as u32;
+                    s.last_points_refresh = Instant::now();
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -240,6 +213,44 @@ impl PubSub {
         }
         Ok(())
     }
+}
+
+async fn event_listener(
+    pubsub: Arc<RwLock<PubSub>>,
+    mut events_rx: Receiver<Events>,
+    tx: Sender<String>,
+    access_token: String,
+) -> Result<()> {
+    while let Some(events) = events_rx.recv().await {
+        let mut writer = pubsub.write().await;
+        match events {
+            Events::Live(id, status) => {
+                if let Some(s) = writer.streamers.get_mut(&id) {
+                    s.live = status;
+                    info!("Live status of {} is {}", s.name, status);
+
+                    let channel_id = id.as_str().parse()?;
+
+                    let nonce = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
+                    let topics = &[
+                        Topics::PredictionsChannelV1(PredictionsChannelV1 { channel_id }),
+                        Topics::CommunityPointsUserV1(CommunityPointsUserV1 { channel_id }),
+                    ];
+                    let cmd = if s.live {
+                        listen_command(topics, access_token.as_str(), nonce.as_str())
+                            .context("Generate listen command")?
+                    } else {
+                        unlisten_command(topics, nonce.as_str())
+                            .context("Generate unlisten command")?
+                    };
+                    info!("{}", cmd);
+                    tx.send(cmd).await?;
+                }
+            }
+            Events::SpadeUpdate(s) => writer.spade_url = Some(s),
+        }
+    }
+    Ok(())
 }
 
 pub async fn prediction_logic(
@@ -285,20 +296,65 @@ pub async fn prediction_logic(
             let mut rng = rand::thread_rng();
             for (idx, p) in odds_percentage.into_iter().enumerate() {
                 debug!("Odds for {}: {}", prediction.0.outcomes[idx].id, p);
-                let value = if p > s.low_threshold && p < s.high_threshold {
-                    debug!("Trying for low odds");
-                    s.points.value(streamer.points)
-                } else if rng.gen_bool(s.high_odds_attempt_rate) {
-                    debug!("Trying for high odds");
-                    s.high_odds_points.value(streamer.points)
-                } else {
-                    0
-                };
-                if value > 0 {
-                    return Ok(Some((prediction.0.outcomes[idx].id.clone(), value)));
+
+                let empty_vec = Vec::new();
+                let points = s
+                    .high_odds
+                    .as_ref()
+                    .unwrap_or(&empty_vec)
+                    .into_iter()
+                    .filter(|x| -> bool {
+                        if (p <= x.low_threshold || p >= x.high_threshold)
+                            && rng.gen_bool(x.high_odds_attempt_rate)
+                        {
+                            return true;
+                        }
+                        false
+                    })
+                    .map(|x| &x.high_odds_points)
+                    .next();
+
+                match points {
+                    Some(s) => {
+                        return Ok(Some((
+                            prediction.0.outcomes[idx].id.clone(),
+                            s.value(streamer.points),
+                        )))
+                    }
+                    None => {
+                        if p >= s.default.min_percentage && p <= s.default.max_percentage {
+                            return Ok(Some((
+                                prediction.0.outcomes[idx].id.clone(),
+                                s.default.points.value(streamer.points),
+                            )));
+                        }
+                    }
                 }
             }
         }
     }
     Ok(None)
+}
+
+async fn view_points(pubsub: Arc<RwLock<PubSub>>) {
+    loop {
+        let streamer = {
+            let pubsub = pubsub.read().await;
+            pubsub
+                .streamers
+                .values()
+                .filter(|x| x.live)
+                .next()
+                .map(|x| x.clone())
+        };
+
+        if streamer.is_none() {
+            sleep(Duration::from_secs(60));
+            continue;
+        }
+
+        let streamer = streamer.unwrap();
+
+        sleep(Duration::from_secs(60))
+    }
 }

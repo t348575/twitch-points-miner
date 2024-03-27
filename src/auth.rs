@@ -11,9 +11,7 @@ use twitch_api::{
     types::{UserIdRef, UserNameRef},
 };
 
-pub const CLIENT_ID: &str = "ue6666qo983tsx6so1t0vnawi233wa";
-pub const DEVICE_ID: &str = "COF4t3ZVYpc87xfn8Jplkv5UQk8KVXvh";
-pub const USER_AGENT: &str = "Mozilla/5.0 (Linux; Android 7.1; Smart Box C1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36";
+use crate::common::{CLIENT_ID, DEVICE_ID, USER_AGENT};
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LoginFlowStart {
@@ -90,7 +88,7 @@ impl TwitchToken for TwitchApiToken {
     }
 }
 
-pub async fn login() -> Result<()> {
+pub async fn login(tokens: &str) -> Result<()> {
     let client = reqwest::Client::new();
 
     let res = client.post("https://id.twitch.tv/oauth2/device")
@@ -129,10 +127,10 @@ pub async fn login() -> Result<()> {
         .unwrap();
 
     tokio::fs::write(
-        "tokens.json",
+        tokens,
         serde_json::to_string(&res.json::<Token>().await.context("Parsing tokens")?)?,
     )
     .await
-    .context("Writing tokens.json")?;
+    .context("Writing tokens file")?;
     Ok(())
 }

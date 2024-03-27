@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
+use super::Normalize;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Strategy {
     #[serde(rename = "smart")]
@@ -10,17 +12,40 @@ pub enum Strategy {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
 #[validate(nested)]
 pub struct Smart {
+    #[validate(nested)]
+    pub high_odds: Option<Vec<HighOdds>>,
+    #[validate(nested)]
+    pub default: DefaultPrediction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
+#[validate(nested)]
+pub struct DefaultPrediction {
+    #[validate(range(min = 0.0, max = 100.0))]
+    #[serde(default = "defaults::_smart_high_threshold_default")]
+    pub max_percentage: f64,
+    #[validate(range(min = 0.0, max = 100.0))]
+    #[serde(default = "defaults::_smart_low_threshold_default")]
+    pub min_percentage: f64,
+    #[validate(nested)]
+    pub points: Points,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
+#[validate(nested)]
+pub struct HighOdds {
     #[validate(range(min = 0.0, max = 100.0))]
     #[serde(default = "defaults::_smart_low_threshold_default")]
     pub low_threshold: f64,
+
     #[validate(range(min = 0.0, max = 100.0))]
     #[serde(default = "defaults::_smart_high_threshold_default")]
     pub high_threshold: f64,
+
     #[validate(range(min = 0.0, max = 100.0))]
     #[serde(default = "defaults::_smart_high_odds_attempt_rate_default")]
     pub high_odds_attempt_rate: f64,
-    #[validate(nested)]
-    pub points: Points,
+
     #[validate(nested)]
     pub high_odds_points: Points,
 }
@@ -76,18 +101,31 @@ impl Validate for Strategy {
     }
 }
 
-impl Smart {
-    pub fn normalize(&mut self) {
-        self.low_threshold /= 100.0;
-        self.high_threshold /= 100.0;
-        self.high_odds_attempt_rate /= 100.0;
-        self.points.normalize();
-        self.high_odds_points.normalize();
+impl Normalize for Smart {
+    fn normalize(&mut self) {
+        self.default.normalize();
+
+        if let Some(h) = self.high_odds.as_mut() {
+            h.iter_mut().for_each(|x| {
+                x.low_threshold /= 100.0;
+                x.high_threshold /= 100.0;
+                x.high_odds_attempt_rate /= 100.0;
+                x.high_odds_points.normalize();
+            });
+        }
     }
 }
 
-impl Strategy {
-    pub fn normalize(&mut self) {
+impl Normalize for DefaultPrediction {
+    fn normalize(&mut self) {
+        self.max_percentage /= 100.0;
+        self.min_percentage /= 100.0;
+        self.points.normalize();
+    }
+}
+
+impl Normalize for Strategy {
+    fn normalize(&mut self) {
         match self {
             Strategy::Smart(s) => s.normalize(),
         }
@@ -106,8 +144,10 @@ impl Points {
             }
         }
     }
+}
 
-    pub fn normalize(&mut self) {
+impl Normalize for Points {
+    fn normalize(&mut self) {
         self.percent /= 100.0;
     }
 }

@@ -8,11 +8,15 @@ pub mod strategy;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub streamers: HashMap<String, Streamer>,
+    pub streamers: HashMap<String, StreamerConfig>,
+}
+
+pub trait Normalize {
+    fn normalize(&mut self);
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
-pub struct Streamer {
+pub struct StreamerConfig {
     #[serde(default = "Default::default")]
     #[validate(nested)]
     pub strategy: strategy::Strategy,

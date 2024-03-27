@@ -15,7 +15,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
 http = "1.1.0"
 twitch_api = { features = ["reqwest", "client", "helix", "pubsub", "unsupported", "typed-builder"], git = "https://github.com/t348575/twitch_api", branch = "hidden_pubsubs" }
-flume = "0.11"
 futures = "0.3"
 async-trait = "0.1"
 clap = { version = "4.5", features = ["derive"] }
@@ -32,3 +31,11 @@ api = ["dep:axum"]
 [profile.release]
 opt-level = 's'
 lto = true
+
+[[bin]]
+name = "twitch-points-miner"
+path = "src/main.rs"
+
+[[bin]]
+name = "default-config"
+path = "src/default_config.rs"

@@ -2,16 +2,19 @@ use color_eyre::{
     eyre::{eyre, Context},
     Result,
 };
-use flume::{Receiver, Sender};
 use futures::{
-    future::try_join_all,
+    future::join_all,
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
 };
 use rand::distributions::{Alphanumeric, DistString};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::{net::TcpStream, time::interval};
+use tokio::{
+    net::TcpStream,
+    sync::mpsc::{Receiver, Sender},
+    time::interval,
+};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use twitch_api::{
     helix::streams::get_streams,
@@ -19,7 +22,14 @@ use twitch_api::{
     HelixClient,
 };
 
-use crate::auth::{Token, TwitchApiToken, CLIENT_ID, DEVICE_ID, USER_AGENT};
+use crate::auth::{Token, TwitchApiToken};
+
+pub const CLIENT_ID: &str = "ue6666qo983tsx6so1t0vnawi233wa";
+pub const DEVICE_ID: &str = "COF4t3ZVYpc87xfn8Jplkv5UQk8KVXvh";
+pub const USER_AGENT: &str = "Mozilla/5.0 (Linux; Android 7.1; Smart Box C1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36";
+pub const FIREFOX_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:84.0) Gecko/20100101 Firefox/84.0";
+pub const CHROME_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36";
 
 pub async fn get_channel_ids(
     users: &[&str],
@@ -27,15 +37,17 @@ pub async fn get_channel_ids(
 ) -> Result<Vec<Option<UserId>>> {
     let client: HelixClient<reqwest::Client> = HelixClient::default();
 
-    let items = try_join_all(
+    let items = join_all(
         users
             .iter()
             .map(|user| client.get_channel_from_login(*user, twitch_api_token)),
     )
     .await
-    .wrap_err_with(|| "Failed to get channel ids")?
     .into_iter()
-    .map(|x| x.map(|x| x.broadcaster_id))
+    .map(|x| match x {
+        Ok(x) => x.map(|x| x.broadcaster_id),
+        Err(_) => None,
+    })
     .collect();
     Ok(items)
 }
@@ -253,8 +265,11 @@ pub async fn connect_twitch_ws(
     Ok(socket.split())
 }
 
-pub async fn writer(rx: Receiver<String>, mut write: SplitSink<WsStream, Message>) -> Result<()> {
-    while let Ok(msg) = rx.recv_async().await {
+pub async fn writer(
+    mut rx: Receiver<String>,
+    mut write: SplitSink<WsStream, Message>,
+) -> Result<()> {
+    while let Some(msg) = rx.recv().await {
         write.send(Message::Text(msg)).await?;
     }
     Ok(())
@@ -265,11 +280,44 @@ pub async fn ping_loop(tx: Sender<String>) -> Result<()> {
     let ping = json!({"type": "PING"}).to_string();
     loop {
         interval.tick().await;
-        if tx.is_disconnected() {
+
+        if let Err(_) = tx.send(ping.clone()).await {
             break;
         }
-
-        tx.send_async(ping.clone()).await?;
     }
+    Ok(())
+}
+
+pub async fn get_spade_url(streamer: &str) -> Result<String> {
+    let client = reqwest::Client::new();
+    let res = client
+        .get(format!("https://www.twitch.tv/{streamer}"))
+        .header("Client-Id", CLIENT_ID)
+        .header("User-Agent", FIREFOX_USER_AGENT)
+        .send()
+        .await?;
+
+    let page_text = res.text().await?;
+    match page_text.split_once("https://static.twitchcdn.net/config/settings.") {
+        Some((_, after)) => match after.split_once(".js") {
+            Some((pattern_js, _)) => Ok(format!(
+                "https://static.twitchcdn.net/config/settings.{}.js",
+                pattern_js
+            )),
+            None => Err(eyre!("Failed to get spade url")),
+        },
+        None => Err(eyre!("Failed to get spade url")),
+    }
+}
+
+pub async fn set_viewership(spade_url: &str) -> Result<()> {
+    let client = reqwest::Client::new();
+    let res = client
+        .post(spade_url)
+        .header("Client-Id", CLIENT_ID)
+        .header("User-Agent", CHROME_USER_AGENT)
+        .send()
+        .await?;
+
     Ok(())
 }
