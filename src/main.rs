@@ -13,7 +13,6 @@ use tracing_subscriber::EnvFilter;
 use validator::Validate;
 
 use crate::config::Normalize;
-use crate::types::StarterInformation;
 
 #[cfg(feature = "web_api")]
 mod web_api;
@@ -87,7 +86,7 @@ async fn main() -> Result<()> {
 
     let streamer_names = c.streamers.keys().map(|s| s.as_str()).collect::<Vec<_>>();
 
-    let channels = twitch::gql::get_channel_ids(&streamer_names, &token.access_token)
+    let channels = twitch::gql::streamer_metadata(&streamer_names, &token.access_token)
         .await
         .wrap_err_with(|| "Could not get streamer list. Is your token valid?")?;
     info!("Got streamer list");
@@ -98,29 +97,23 @@ async fn main() -> Result<()> {
         }
     }
 
-    let channels = channels
-        .into_iter()
-        .map(|x| x.unwrap())
-        .zip(c.streamers.clone())
-        .map(|x| StarterInformation::init(x))
-        .collect::<Vec<_>>();
-    let (events_tx, events_rx) = mpsc::channel(128);
-
     println!("Everything ok, starting twitch pubsub");
 
+    let (events_tx, events_rx) = mpsc::channel(128);
+    let channels = channels.into_iter().map(|x| x.unwrap());
     let pubsub_data = Arc::new(RwLock::new(pubsub::PubSub::new(
-        channels.clone(),
+        channels.clone().zip(c.streamers.values()).collect(),
         args.simulate,
         token.clone(),
         user_id,
-    )));
+    )?));
     let pubsub = spawn(pubsub::PubSub::run(
         token.clone(),
         c,
         events_rx,
         pubsub_data.clone(),
     ));
-    let live = spawn(live::run(token.clone(), events_tx, channels));
+    let live = spawn(live::run(token.clone(), events_tx, channels.collect()));
 
     #[cfg(feature = "web_api")]
     let axum_server = web_api::get_api_server(args.address, pubsub_data, Arc::new(token)).await;

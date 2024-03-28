@@ -6,7 +6,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use color_eyre::{eyre::Context, Result};
+use color_eyre::{
+    eyre::{eyre, Context},
+    Result,
+};
 use futures::StreamExt;
 use rand::{
     distributions::{Alphanumeric, DistString},
@@ -31,14 +34,10 @@ use twitch_api::{
 };
 
 use crate::{
-    config::{self, filters::filter_matches, Config},
+    config::{self, filters::filter_matches, Config, StreamerConfig},
     live::Events,
-    twitch::{
-        auth::Token,
-        gql::{get_channel_points, make_prediction},
-        ws::{connect_twitch_ws, ping_loop, writer},
-    },
-    types::{StarterInformation, Streamer},
+    twitch::{api, auth::Token, gql, ws},
+    types::{Streamer, StreamerInfo},
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -54,45 +53,47 @@ pub struct PubSub {
 
 impl PubSub {
     pub fn new(
-        channels: Vec<StarterInformation>,
+        channels: Vec<((UserId, StreamerInfo), &StreamerConfig)>,
         simulate: bool,
         token: Token,
         user_id: String,
-    ) -> PubSub {
+    ) -> Result<PubSub> {
         let streamers = channels
             .into_iter()
-            .map(|x| {
+            .map(|((channel_id, info), config)| {
                 (
-                    x.user_id,
+                    channel_id,
                     Streamer {
-                        name: x.name,
-                        live: false,
+                        info,
                         predictions: HashMap::new(),
-                        config: x.config,
+                        config: config.clone(),
                         points: 0,
                         last_points_refresh: Instant::now(),
-                        broadcast_id: None,
                     },
                 )
             })
             .collect();
-        PubSub {
+        Ok(PubSub {
             streamers,
             simulate,
             token,
             spade_url: None,
             user_id,
-        }
+        })
     }
 
     #[cfg(feature = "web_api")]
     pub fn get_by_name(&self, name: &str) -> Option<&Streamer> {
-        self.streamers.values().find(|s| s.name == name)
+        self.streamers
+            .values()
+            .find(|s| s.info.channel_name == name)
     }
 
     #[cfg(feature = "web_api")]
     pub fn get_by_name_mut(&mut self, name: &str) -> Option<&mut Streamer> {
-        self.streamers.values_mut().find(|s| s.name == name)
+        self.streamers
+            .values_mut()
+            .find(|s| s.info.channel_name == name)
     }
 
     pub async fn run(
@@ -102,12 +103,12 @@ impl PubSub {
         pubsub: Arc<RwLock<PubSub>>,
     ) -> Result<()> {
         let (write, mut read) =
-            connect_twitch_ws("wss://pubsub-edge.twitch.tv", &token.access_token).await?;
+            ws::connect_twitch_ws("wss://pubsub-edge.twitch.tv", &token.access_token).await?;
         info!("Connected to pubsub");
 
         let (tx, rx) = mpsc::channel(128);
-        spawn(writer(rx, write));
-        spawn(ping_loop(tx.clone()));
+        spawn(ws::writer(rx, write));
+        spawn(ws::ping_loop(tx.clone()));
         spawn(event_listener(
             pubsub.clone(),
             events_rx,
@@ -119,7 +120,7 @@ impl PubSub {
         {
             let mut writer = pubsub.write().await;
             for (_, s) in writer.streamers.iter_mut() {
-                let points = get_channel_points(&s.name, &token.access_token)
+                let points = gql::get_channel_points(&s.info.channel_name, &token.access_token)
                     .await
                     .context("Get channel points")?;
                 s.points = points;
@@ -203,7 +204,7 @@ impl PubSub {
             return Ok(());
         }
         if s.last_points_refresh.elapsed() > Duration::from_secs(5) {
-            let points = get_channel_points(&s.name, &self.token.access_token)
+            let points = gql::get_channel_points(&s.info.channel_name, &self.token.access_token)
                 .await
                 .context("Get channel points")?;
             let s = self.streamers.get_mut(streamer).unwrap();
@@ -216,7 +217,7 @@ impl PubSub {
             .context("Prediction logic")?
         {
             info!("Attempting prediction {}, with points {}", event_id, points);
-            make_prediction(
+            gql::make_prediction(
                 points,
                 event_id,
                 outcome_id,
@@ -246,9 +247,13 @@ async fn event_listener(
                 broadcast_id,
             } => {
                 if let Some(s) = writer.streamers.get_mut(&channel_id) {
-                    info!("Live status of {} is {}", s.name, broadcast_id.is_some());
-                    s.live = broadcast_id.is_some();
-                    s.broadcast_id = broadcast_id;
+                    info!(
+                        "Live status of {} is {}",
+                        s.info.channel_name,
+                        broadcast_id.is_some()
+                    );
+                    s.info.live = broadcast_id.is_some();
+                    s.info.broadcast_id = broadcast_id;
 
                     let channel_id = channel_id.as_str().parse()?;
                     let nonce = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
@@ -256,7 +261,7 @@ async fn event_listener(
                         Topics::PredictionsChannelV1(PredictionsChannelV1 { channel_id }),
                         Topics::CommunityPointsUserV1(CommunityPointsUserV1 { channel_id }),
                     ];
-                    let cmd = if s.live {
+                    let cmd = if s.info.live {
                         listen_command(topics, access_token.as_str(), nonce.as_str())
                             .context("Generate listen command")?
                     } else {
@@ -356,16 +361,25 @@ pub async fn prediction_logic(
     Ok(None)
 }
 
-async fn view_points(pubsub: Arc<RwLock<PubSub>>) {
+async fn view_points(pubsub: Arc<RwLock<PubSub>>) -> Result<()> {
+    let (user_id, spade_url, access_token) = {
+        let reader = pubsub.read().await;
+        (
+            reader.user_id.parse()?,
+            reader.spade_url.clone().ok_or(eyre!("Spade URL not set"))?,
+            reader.token.access_token.clone(),
+        )
+    };
+
     loop {
         let streamer = {
             let pubsub = pubsub.read().await;
             pubsub
                 .streamers
-                .values()
-                .filter(|x| x.live)
+                .iter()
+                .filter(|x| x.1.info.live)
                 .next()
-                .map(|x| x.clone())
+                .map(|x| (x.0.clone(), x.1.clone()))
         };
 
         if streamer.is_none() {
@@ -373,7 +387,15 @@ async fn view_points(pubsub: Arc<RwLock<PubSub>>) {
             continue;
         }
 
-        let streamer = streamer.unwrap();
+        let (id, streamer) = streamer.unwrap();
+        api::set_viewership(
+            user_id,
+            id.clone(),
+            streamer.info,
+            &spade_url,
+            &access_token,
+        )
+        .await?;
 
         sleep(Duration::from_secs(60))
     }

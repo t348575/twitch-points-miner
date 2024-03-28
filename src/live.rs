@@ -6,7 +6,7 @@ use twitch_api::types::UserId;
 
 use crate::{
     twitch::{api, auth::Token, gql},
-    types::StarterInformation,
+    types::StreamerInfo,
 };
 
 #[derive(Debug, Clone)]
@@ -21,29 +21,29 @@ pub enum Events {
 pub async fn run(
     token: Token,
     events_tx: Sender<Events>,
-    starter_info: Vec<StarterInformation>,
+    channels: Vec<(UserId, StreamerInfo)>,
 ) -> Result<()> {
-    let channels = starter_info
-        .iter()
-        .map(|x| x.user_id.clone())
-        .collect::<Vec<_>>();
-
     let mut channels_status: HashMap<UserId, bool> = channels
         .clone()
         .into_iter()
-        .map(|x| (x.clone(), false))
+        .map(|x| (x.0.clone(), false))
         .collect();
-    let mut interval = interval(Duration::from_secs(2 * 60));
 
+    let channel_ids = channels
+        .iter()
+        .map(|x| x.0.clone())
+        .collect::<Vec<UserId>>();
+
+    let mut interval = interval(Duration::from_secs(2 * 60));
     loop {
-        let live_channels = gql::live_channels(&channels, &token.access_token)
+        let live_channels = gql::live_channels(&channel_ids, &token.access_token)
             .await
             .context("Live channels")?;
 
         let mut get_spade_using = String::new();
         for (idx, (user_id, broadcast_id)) in live_channels.into_iter().enumerate() {
             if broadcast_id.is_some() {
-                get_spade_using = starter_info[idx].name.clone()
+                get_spade_using = channels[idx].1.channel_name.clone();
             }
 
             if channels_status[&user_id] != broadcast_id.is_some() {

@@ -18,9 +18,8 @@ use tokio::{signal, sync::RwLock};
 use tracing::info;
 
 use crate::{
-    auth::Token,
-    common,
     pubsub::{self, prediction_logic},
+    twitch::{auth::Token, gql},
 };
 
 type ApiState = Arc<RwLock<pubsub::PubSub>>;
@@ -133,7 +132,7 @@ async fn place_bet(
     simulate: bool,
 ) -> Result<()> {
     info!("Prediction {} with {} points", event_id, points);
-    common::make_prediction(points, &event_id, outcome_id, token, simulate)
+    gql::make_prediction(points, &event_id, outcome_id, &token.access_token, simulate)
         .await
         .context("Make prediction")?;
     Ok(())

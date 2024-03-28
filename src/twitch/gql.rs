@@ -6,7 +6,7 @@ use serde_json::json;
 use twitch_api::types::UserId;
 
 use super::{CLIENT_ID, DEVICE_ID, USER_AGENT};
-use crate::types::UseLiveReplyUser;
+use crate::types::{Game, StreamerInfo};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GqlRequest<T> {
@@ -26,10 +26,10 @@ fn gql_req(access_token: &str) -> RequestBuilder {
         .header("Authorization", format!("OAuth {}", access_token))
 }
 
-pub async fn get_channel_ids(
+pub async fn streamer_metadata(
     users: &[&str],
     access_token: &str,
-) -> Result<Vec<Option<UseLiveReplyUser>>> {
+) -> Result<Vec<Option<(UserId, StreamerInfo)>>> {
     #[derive(Debug, Default, Serialize)]
     struct Variables<'a> {
         #[serde(rename = "channelLogin")]
@@ -39,10 +39,10 @@ pub async fn get_channel_ids(
     impl<'a> Default for GqlRequest<Variables<'a>> {
         fn default() -> Self {
             Self {
-                operation_name: "UseLive".to_string(),
+                operation_name: "StreamMetadata".to_string(),
                 extensions: json!({
                     "persistedQuery": {
-                        "sha256Hash": "639d5f11bfb8bf3053b424d9ef650d04c4ebb7d94711d644afb08fe9a0fad5d9",
+                        "sha256Hash": "676ee2f834ede42eb4514cdb432b3134fefc12590080c9a2c9bb44a2a4a63266",
                         "version": 1
                     }
                 }),
@@ -51,16 +51,41 @@ pub async fn get_channel_ids(
         }
     }
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
-    struct Root {
-        data: Data,
+    pub struct Root {
+        pub data: Data,
     }
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
-    struct Data {
-        user: Option<UseLiveReplyUser>,
+    pub struct Data {
+        pub user: Option<User>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct User {
+        pub id: UserId,
+        pub stream: Option<Stream>,
+    }
+
+    #[derive(Deserialize, Clone)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Stream {
+        pub id: UserId,
+        pub game: Game,
+    }
+
+    impl From<User> for StreamerInfo {
+        fn from(value: User) -> Self {
+            Self {
+                live: value.stream.is_some(),
+                broadcast_id: value.stream.clone().map(|x| x.id),
+                channel_name: String::new(),
+                game: value.stream.map(|x| x.game),
+            }
+        }
     }
 
     let users = users
@@ -75,7 +100,13 @@ pub async fn get_channel_ids(
     let res = gql_req(access_token).json(&users).send().await?;
     let items = res.json::<Vec<Root>>().await?;
 
-    Ok(items.into_iter().map(|x| x.data.user).collect())
+    Ok(items
+        .into_iter()
+        .map(|x| match x.data.user {
+            Some(s) => Some((s.id.clone(), s.into())),
+            None => None,
+        })
+        .collect())
 }
 
 /// Assumes all the channels exist
@@ -84,7 +115,7 @@ pub async fn live_channels(
     channels: &[UserId],
     access_token: &str,
 ) -> Result<Vec<(UserId, Option<UserId>)>> {
-    let channels = get_channel_ids(
+    let channels = streamer_metadata(
         &channels.iter().map(|x| x.as_str()).collect::<Vec<_>>(),
         access_token,
     )
@@ -92,7 +123,7 @@ pub async fn live_channels(
     Ok(channels
         .into_iter()
         .filter_map(|x| x)
-        .map(|x| (x.id, x.stream.map(|x| x.id)))
+        .map(|x| (x.0, x.1.broadcast_id.map(|x| x.into())))
         .collect())
 }
 
