@@ -31,10 +31,13 @@ use twitch_api::{
 };
 
 use crate::{
-    auth::Token,
-    common::{connect_twitch_ws, get_channel_points, make_prediction, ping_loop, writer},
     config::{self, filters::filter_matches, Config},
     live::Events,
+    twitch::{
+        auth::Token,
+        gql::{get_channel_points, make_prediction},
+        ws::{connect_twitch_ws, ping_loop, writer},
+    },
     types::{StarterInformation, Streamer},
 };
 
@@ -82,12 +85,12 @@ impl PubSub {
         }
     }
 
-    #[cfg(feature = "api")]
+    #[cfg(feature = "web_api")]
     pub fn get_by_name(&self, name: &str) -> Option<&Streamer> {
         self.streamers.values().find(|s| s.name == name)
     }
 
-    #[cfg(feature = "api")]
+    #[cfg(feature = "web_api")]
     pub fn get_by_name_mut(&mut self, name: &str) -> Option<&mut Streamer> {
         self.streamers.values_mut().find(|s| s.name == name)
     }
@@ -116,7 +119,7 @@ impl PubSub {
         {
             let mut writer = pubsub.write().await;
             for (_, s) in writer.streamers.iter_mut() {
-                let points = get_channel_points(&s.name, &token)
+                let points = get_channel_points(&s.name, &token.access_token)
                     .await
                     .context("Get channel points")?;
                 s.points = points;
@@ -200,7 +203,7 @@ impl PubSub {
             return Ok(());
         }
         if s.last_points_refresh.elapsed() > Duration::from_secs(5) {
-            let points = get_channel_points(&s.name, &self.token)
+            let points = get_channel_points(&s.name, &self.token.access_token)
                 .await
                 .context("Get channel points")?;
             let s = self.streamers.get_mut(streamer).unwrap();
@@ -213,9 +216,15 @@ impl PubSub {
             .context("Prediction logic")?
         {
             info!("Attempting prediction {}, with points {}", event_id, points);
-            make_prediction(points, event_id, outcome_id, &self.token, self.simulate)
-                .await
-                .context("Make prediction")?;
+            make_prediction(
+                points,
+                event_id,
+                outcome_id,
+                &self.token.access_token,
+                self.simulate,
+            )
+            .await
+            .context("Make prediction")?;
             let s = self.streamers.get_mut(streamer).unwrap();
             s.predictions.get_mut(event_id).unwrap().1 = true;
         }

@@ -4,7 +4,10 @@ use color_eyre::{eyre::Context, Result};
 use tokio::{sync::mpsc::Sender, time::interval};
 use twitch_api::types::UserId;
 
-use crate::{auth::Token, common, types::StarterInformation};
+use crate::{
+    twitch::{api, auth::Token, gql},
+    types::StarterInformation,
+};
 
 #[derive(Debug, Clone)]
 pub enum Events {
@@ -33,7 +36,7 @@ pub async fn run(
     let mut interval = interval(Duration::from_secs(2 * 60));
 
     loop {
-        let live_channels = common::live_channels(&channels, &token.access_token)
+        let live_channels = gql::live_channels(&channels, &token.access_token)
             .await
             .context("Live channels")?;
 
@@ -57,7 +60,7 @@ pub async fn run(
 
         events_tx
             .send(Events::SpadeUpdate(
-                common::get_spade_url(&get_spade_using).await?,
+                api::get_spade_url(&get_spade_using).await?,
             ))
             .await?;
 

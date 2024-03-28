@@ -1,31 +1,12 @@
-use color_eyre::{
-    eyre::{eyre, Context},
-    Result,
-};
-use futures::{
-    stream::{SplitSink, SplitStream},
-    SinkExt, StreamExt,
-};
+use color_eyre::{eyre::eyre, Result};
 use rand::distributions::{Alphanumeric, DistString};
 use reqwest::RequestBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::{
-    net::TcpStream,
-    sync::mpsc::{Receiver, Sender},
-    time::interval,
-};
-use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use twitch_api::types::UserId;
 
-use crate::{auth::Token, types::UseLiveReplyUser};
-
-pub const CLIENT_ID: &str = "ue6666qo983tsx6so1t0vnawi233wa";
-pub const DEVICE_ID: &str = "COF4t3ZVYpc87xfn8Jplkv5UQk8KVXvh";
-pub const USER_AGENT: &str = "Mozilla/5.0 (Linux; Android 7.1; Smart Box C1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36";
-pub const FIREFOX_USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:84.0) Gecko/20100101 Firefox/84.0";
-pub const CHROME_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36";
+use super::{CLIENT_ID, DEVICE_ID, USER_AGENT};
+use crate::types::UseLiveReplyUser;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GqlRequest<T> {
@@ -33,6 +14,16 @@ struct GqlRequest<T> {
     operation_name: String,
     extensions: serde_json::Value,
     variables: T,
+}
+
+fn gql_req(access_token: &str) -> RequestBuilder {
+    let client = reqwest::Client::new();
+    client
+        .post("https://gql.twitch.tv/gql")
+        .header("Client-Id", CLIENT_ID)
+        .header("User-Agent", USER_AGENT)
+        .header("X-Device-Id", DEVICE_ID)
+        .header("Authorization", format!("OAuth {}", access_token))
 }
 
 pub async fn get_channel_ids(
@@ -109,7 +100,7 @@ pub async fn make_prediction(
     points: u32,
     event_id: &str,
     outcome_id: String,
-    token: &Token,
+    access_token: &str,
     simulate: bool,
 ) -> Result<()> {
     if simulate {
@@ -154,7 +145,7 @@ pub async fn make_prediction(
     pred.variables.input.points = points;
     pred.variables.input.transaction_id = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
 
-    let res = gql_req(&token.access_token).json(&pred).send().await?;
+    let res = gql_req(access_token).json(&pred).send().await?;
 
     if !res.status().is_success() {
         return Err(eyre!("Failed to place prediction"));
@@ -162,7 +153,7 @@ pub async fn make_prediction(
     Ok(())
 }
 
-pub async fn get_channel_points(channel: &str, token: &Token) -> Result<u32> {
+pub async fn get_channel_points(channel: &str, access_token: &str) -> Result<u32> {
     #[derive(Serialize, Default, Debug)]
     struct Variables<'a> {
         #[serde(rename = "channelLogin")]
@@ -186,7 +177,7 @@ pub async fn get_channel_points(channel: &str, token: &Token) -> Result<u32> {
     let mut points = GqlRequest::<Variables>::default();
     points.variables.channel_login = channel;
 
-    let res = gql_req(&token.access_token).json(&points).send().await?;
+    let res = gql_req(access_token).json(&points).send().await?;
 
     if !res.status().is_success() {
         return Err(eyre!("Failed to get channel points"));
@@ -227,75 +218,6 @@ pub async fn get_channel_points(channel: &str, token: &Token) -> Result<u32> {
     Ok(balance as u32)
 }
 
-type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
-
-pub async fn connect_twitch_ws(
-    url: &str,
-    access_token: &str,
-) -> Result<(SplitSink<WsStream, Message>, SplitStream<WsStream>)> {
-    let request = http::Request::builder()
-        .uri(url)
-        .header("Authorization", format!("OAuth {}", access_token))
-        .header("Host", "localhost")
-        .header("upgrade", "websocket")
-        .header("connection", "upgrade")
-        .header(
-            "Sec-WebSocket-Key",
-            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
-        )
-        .header("sec-websocket-version", 13)
-        .body(())
-        .context(format!("Couldn't build request for {}", url))?;
-    let (socket, _) = connect_async(request).await?;
-
-    Ok(socket.split())
-}
-
-pub async fn writer(
-    mut rx: Receiver<String>,
-    mut write: SplitSink<WsStream, Message>,
-) -> Result<()> {
-    while let Some(msg) = rx.recv().await {
-        write.send(Message::Text(msg)).await?;
-    }
-    Ok(())
-}
-
-pub async fn ping_loop(tx: Sender<String>) -> Result<()> {
-    let mut interval = interval(std::time::Duration::from_secs(3 * 60));
-    let ping = json!({"type": "PING"}).to_string();
-    loop {
-        interval.tick().await;
-
-        if let Err(_) = tx.send(ping.clone()).await {
-            break;
-        }
-    }
-    Ok(())
-}
-
-pub async fn get_spade_url(streamer: &str) -> Result<String> {
-    let client = reqwest::Client::new();
-    let res = client
-        .get(format!("https://www.twitch.tv/{streamer}"))
-        .header("Client-Id", CLIENT_ID)
-        .header("User-Agent", FIREFOX_USER_AGENT)
-        .send()
-        .await?;
-
-    let page_text = res.text().await?;
-    match page_text.split_once("https://static.twitchcdn.net/config/settings.") {
-        Some((_, after)) => match after.split_once(".js") {
-            Some((pattern_js, _)) => Ok(format!(
-                "https://static.twitchcdn.net/config/settings.{}.js",
-                pattern_js
-            )),
-            None => Err(eyre!("Failed to get spade url")),
-        },
-        None => Err(eyre!("Failed to get spade url")),
-    }
-}
-
 pub async fn get_user_id(access_token: &str) -> Result<String> {
     #[derive(Deserialize, Debug)]
     #[serde(rename_all = "camelCase")]
@@ -330,26 +252,4 @@ pub async fn get_user_id(access_token: &str) -> Result<String> {
         .await?;
 
     Ok(res.json::<Root>().await?.data.current_user.id)
-}
-
-pub async fn set_viewership(spade_url: &str) -> Result<()> {
-    let client = reqwest::Client::new();
-    let res = client
-        .post(spade_url)
-        .header("Client-Id", CLIENT_ID)
-        .header("User-Agent", CHROME_USER_AGENT)
-        .send()
-        .await?;
-
-    Ok(())
-}
-
-fn gql_req(access_token: &str) -> RequestBuilder {
-    let client = reqwest::Client::new();
-    client
-        .post("https://gql.twitch.tv/gql")
-        .header("Client-Id", CLIENT_ID)
-        .header("User-Agent", USER_AGENT)
-        .header("X-Device-Id", DEVICE_ID)
-        .header("Authorization", format!("OAuth {}", access_token))
 }

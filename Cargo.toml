@@ -26,7 +26,7 @@ axum = { version = "0.7", optional = true, features = ["macros"] }
 dialoguer = "0.11"
 
 [features]
-api = ["dep:axum"]
+web_api = ["dep:axum"]
 
 [profile.release]
 opt-level = 's'

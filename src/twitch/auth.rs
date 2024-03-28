@@ -4,7 +4,7 @@ use color_eyre::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::common::{CLIENT_ID, DEVICE_ID, USER_AGENT};
+use super::{CLIENT_ID, DEVICE_ID, USER_AGENT};
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LoginFlowStart {

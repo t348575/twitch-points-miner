@@ -15,13 +15,14 @@ use validator::Validate;
 use crate::config::Normalize;
 use crate::types::StarterInformation;
 
-#[cfg(feature = "api")]
-mod api;
-mod auth;
-mod common;
+#[cfg(feature = "web_api")]
+mod web_api;
+// mod auth;
+// mod common;
 mod config;
 mod live;
 mod pubsub;
+mod twitch;
 mod types;
 
 #[derive(Parser, Debug)]
@@ -31,7 +32,7 @@ struct Args {
     #[arg(short, long, default_value_t = String::from("config.yaml"))]
     config: String,
     /// API address to bind
-    #[cfg(feature = "api")]
+    #[cfg(feature = "web_api")]
     #[arg(short, long, default_value_t = String::from("0.0.0.0:3000"))]
     address: String,
     /// Simulate
@@ -54,7 +55,7 @@ async fn main() -> Result<()> {
 
     if !Path::new(&args.token).exists() {
         info!("Starting login sequence");
-        auth::login(&args.token).await?;
+        twitch::auth::login(&args.token).await?;
     }
 
     let mut c: config::Config = serde_yaml::from_str(
@@ -74,7 +75,7 @@ async fn main() -> Result<()> {
         s.strategy.normalize();
     }
 
-    let token: auth::Token = serde_json::from_str(
+    let token: twitch::auth::Token = serde_json::from_str(
         &fs::read_to_string(args.token)
             .await
             .context("Reading tokens file")?,
@@ -82,11 +83,11 @@ async fn main() -> Result<()> {
     .context("Parsing tokens file")?;
     info!("Parsed tokens file");
 
-    let user_id = common::get_user_id(&token.access_token).await?;
+    let user_id = twitch::gql::get_user_id(&token.access_token).await?;
 
     let streamer_names = c.streamers.keys().map(|s| s.as_str()).collect::<Vec<_>>();
 
-    let channels = common::get_channel_ids(&streamer_names, &token.access_token)
+    let channels = twitch::gql::get_channel_ids(&streamer_names, &token.access_token)
         .await
         .wrap_err_with(|| "Could not get streamer list. Is your token valid?")?;
     info!("Got streamer list");
@@ -121,10 +122,10 @@ async fn main() -> Result<()> {
     ));
     let live = spawn(live::run(token.clone(), events_tx, channels));
 
-    #[cfg(feature = "api")]
-    let axum_server = api::get_api_server(args.address, pubsub_data, Arc::new(token)).await;
+    #[cfg(feature = "web_api")]
+    let axum_server = web_api::get_api_server(args.address, pubsub_data, Arc::new(token)).await;
 
-    #[cfg(feature = "api")]
+    #[cfg(feature = "web_api")]
     axum_server.await?;
     pubsub.await??;
     live.await??;
