@@ -3,11 +3,11 @@ use color_eyre::{
     Result,
 };
 use futures::{
-    future::join_all,
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
 };
 use rand::distributions::{Alphanumeric, DistString};
+use reqwest::RequestBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::{
@@ -16,13 +16,9 @@ use tokio::{
     time::interval,
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
-use twitch_api::{
-    helix::streams::get_streams,
-    types::{UserId, UserIdRef},
-    HelixClient,
-};
+use twitch_api::types::UserId;
 
-use crate::auth::{Token, TwitchApiToken};
+use crate::{auth::Token, types::UseLiveReplyUser};
 
 pub const CLIENT_ID: &str = "ue6666qo983tsx6so1t0vnawi233wa";
 pub const DEVICE_ID: &str = "COF4t3ZVYpc87xfn8Jplkv5UQk8KVXvh";
@@ -31,54 +27,81 @@ pub const FIREFOX_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:84.0) Gecko/20100101 Firefox/84.0";
 pub const CHROME_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36";
 
-pub async fn get_channel_ids(
-    users: &[&str],
-    twitch_api_token: &TwitchApiToken,
-) -> Result<Vec<Option<UserId>>> {
-    let client: HelixClient<reqwest::Client> = HelixClient::default();
-
-    let items = join_all(
-        users
-            .iter()
-            .map(|user| client.get_channel_from_login(*user, twitch_api_token)),
-    )
-    .await
-    .into_iter()
-    .map(|x| match x {
-        Ok(x) => x.map(|x| x.broadcaster_id),
-        Err(_) => None,
-    })
-    .collect();
-    Ok(items)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GqlRequest<T> {
+    #[serde(rename = "operationName")]
+    operation_name: String,
+    extensions: serde_json::Value,
+    variables: T,
 }
 
+pub async fn get_channel_ids(
+    users: &[&str],
+    access_token: &str,
+) -> Result<Vec<Option<UseLiveReplyUser>>> {
+    #[derive(Debug, Default, Serialize)]
+    struct Variables<'a> {
+        #[serde(rename = "channelLogin")]
+        channel_login: &'a str,
+    }
+
+    impl<'a> Default for GqlRequest<Variables<'a>> {
+        fn default() -> Self {
+            Self {
+                operation_name: "UseLive".to_string(),
+                extensions: json!({
+                    "persistedQuery": {
+                        "sha256Hash": "639d5f11bfb8bf3053b424d9ef650d04c4ebb7d94711d644afb08fe9a0fad5d9",
+                        "version": 1
+                    }
+                }),
+                variables: Default::default(),
+            }
+        }
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Root {
+        data: Data,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Data {
+        user: Option<UseLiveReplyUser>,
+    }
+
+    let users = users
+        .iter()
+        .map(|user| {
+            let mut req = GqlRequest::<Variables>::default();
+            req.variables.channel_login = user;
+            req
+        })
+        .collect::<Vec<_>>();
+
+    let res = gql_req(access_token).json(&users).send().await?;
+    let items = res.json::<Vec<Root>>().await?;
+
+    Ok(items.into_iter().map(|x| x.data.user).collect())
+}
+
+/// Assumes all the channels exist
+/// (Channel ID, Broadcast ID)
 pub async fn live_channels(
     channels: &[UserId],
-    twitch_api_token: &TwitchApiToken,
-) -> Result<Vec<(UserId, bool)>> {
-    let client: HelixClient<reqwest::Client> = HelixClient::default();
-
-    let ids: Vec<&UserIdRef> = channels.iter().map(|ch| ch.into()).collect();
-    let req = get_streams::GetStreamsRequest::builder()
-        .user_id(ids)
-        .build();
-    let res: Vec<get_streams::Stream> = client
-        .req_get(req, twitch_api_token)
-        .await
-        .context("Live channels")?
-        .data;
+    access_token: &str,
+) -> Result<Vec<(UserId, Option<UserId>)>> {
+    let channels = get_channel_ids(
+        &channels.iter().map(|x| x.as_str()).collect::<Vec<_>>(),
+        access_token,
+    )
+    .await?;
     Ok(channels
-        .iter()
-        .map(|ch| {
-            (
-                ch.clone(),
-                res.iter()
-                    .find(|stream| stream.user_id == *ch)
-                    .and(Some(true))
-                    .or(Some(false))
-                    .unwrap(),
-            )
-        })
+        .into_iter()
+        .filter_map(|x| x)
+        .map(|x| (x.id, x.stream.map(|x| x.id)))
         .collect())
 }
 
@@ -93,22 +116,13 @@ pub async fn make_prediction(
         return Ok(());
     }
 
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    struct MakePrediction<'a> {
-        #[serde(rename = "operationName")]
-        operation_name: String,
-        extensions: serde_json::Value,
-        #[serde(borrow)]
-        variables: Variables<'a>,
-    }
-
-    #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Default, Serialize)]
     struct Variables<'a> {
         #[serde(borrow)]
         input: Input<'a>,
     }
 
-    #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Default, Serialize)]
     struct Input<'a> {
         #[serde(rename = "eventID")]
         event_id: &'a str,
@@ -119,7 +133,7 @@ pub async fn make_prediction(
         transaction_id: String,
     }
 
-    impl<'a> Default for MakePrediction<'a> {
+    impl<'a> Default for GqlRequest<Variables<'a>> {
         fn default() -> Self {
             Self {
                 operation_name: "MakePrediction".to_string(),
@@ -134,22 +148,13 @@ pub async fn make_prediction(
         }
     }
 
-    let mut pred = MakePrediction::default();
+    let mut pred = GqlRequest::<Variables>::default();
     pred.variables.input.event_id = event_id;
     pred.variables.input.outcome_id = outcome_id;
     pred.variables.input.points = points;
     pred.variables.input.transaction_id = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
 
-    let client = reqwest::Client::new();
-    let res = client
-        .post("https://gql.twitch.tv/gql")
-        .header("Client-Id", CLIENT_ID)
-        .header("User-Agent", USER_AGENT)
-        .header("X-Device-Id", DEVICE_ID)
-        .header("Authorization", format!("OAuth {}", token.access_token))
-        .json(&pred)
-        .send()
-        .await?;
+    let res = gql_req(&token.access_token).json(&pred).send().await?;
 
     if !res.status().is_success() {
         return Err(eyre!("Failed to place prediction"));
@@ -157,22 +162,14 @@ pub async fn make_prediction(
     Ok(())
 }
 
-pub async fn get_channel_points(channel: String, token: &Token) -> Result<u32> {
-    #[derive(Serialize, Debug)]
-    struct GetChannelPoints {
-        #[serde(rename = "operationName")]
-        operation_name: String,
-        extensions: serde_json::Value,
-        variables: Variables,
-    }
-
+pub async fn get_channel_points(channel: &str, token: &Token) -> Result<u32> {
     #[derive(Serialize, Default, Debug)]
-    struct Variables {
+    struct Variables<'a> {
         #[serde(rename = "channelLogin")]
-        channel_login: String,
+        channel_login: &'a str,
     }
 
-    impl Default for GetChannelPoints {
+    impl<'a> Default for GqlRequest<Variables<'a>> {
         fn default() -> Self {
             Self {
                 operation_name: "ChannelPointsContext".to_string(),
@@ -186,23 +183,12 @@ pub async fn get_channel_points(channel: String, token: &Token) -> Result<u32> {
             }
         }
     }
-
-    let mut points = GetChannelPoints::default();
+    let mut points = GqlRequest::<Variables>::default();
     points.variables.channel_login = channel;
 
-    let client = reqwest::Client::new();
-    let res = client
-        .post("https://gql.twitch.tv/gql")
-        .header("Client-Id", CLIENT_ID)
-        .header("User-Agent", USER_AGENT)
-        .header("X-Device-Id", DEVICE_ID)
-        .header("Authorization", format!("OAuth {}", token.access_token))
-        .json(&points)
-        .send()
-        .await?;
+    let res = gql_req(&token.access_token).json(&points).send().await?;
 
     if !res.status().is_success() {
-        println!("{:#?}", res);
         return Err(eyre!("Failed to get channel points"));
     }
 
@@ -310,6 +296,42 @@ pub async fn get_spade_url(streamer: &str) -> Result<String> {
     }
 }
 
+pub async fn get_user_id(access_token: &str) -> Result<String> {
+    #[derive(Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Root {
+        pub data: Data,
+    }
+
+    #[derive(Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Data {
+        pub current_user: CurrentUser,
+    }
+
+    #[derive(Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct CurrentUser {
+        pub id: String,
+    }
+
+    let res = gql_req(access_token)
+        .json(&json!({
+            "operationName": "CoreActionsCurrentUser",
+            "variables": {},
+            "extensions": {
+                "persistedQuery": {
+                    "version": 1,
+                    "sha256Hash": "6b5b63a013cf66a995d61f71a508ab5c8e4473350c5d4136f846ba65e8101e95"
+                }
+            }
+        }))
+        .send()
+        .await?;
+
+    Ok(res.json::<Root>().await?.data.current_user.id)
+}
+
 pub async fn set_viewership(spade_url: &str) -> Result<()> {
     let client = reqwest::Client::new();
     let res = client
@@ -320,4 +342,14 @@ pub async fn set_viewership(spade_url: &str) -> Result<()> {
         .await?;
 
     Ok(())
+}
+
+fn gql_req(access_token: &str) -> RequestBuilder {
+    let client = reqwest::Client::new();
+    client
+        .post("https://gql.twitch.tv/gql")
+        .header("Client-Id", CLIENT_ID)
+        .header("User-Agent", USER_AGENT)
+        .header("X-Device-Id", DEVICE_ID)
+        .header("Authorization", format!("OAuth {}", access_token))
 }

@@ -23,7 +23,7 @@ Build the image with the provided `Dockerfile` or just pull `t348575/twitch-poin
 
 Run with stdin attached the first time, in order to authenticate your twitch account.
 ```
-docker run -i -v ./data:/data t348575/twitch-points-miner --token /data/tokens.json
+docker run -i -t -v ./data:/data t348575/twitch-points-miner --token /data/tokens.json
 ```
 Once it is running and the login flow is complete, CTRL+C then just attach the tokens file in subsequent runs
 

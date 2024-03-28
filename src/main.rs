@@ -82,19 +82,18 @@ async fn main() -> Result<()> {
     .context("Parsing tokens file")?;
     info!("Parsed tokens file");
 
+    let user_id = common::get_user_id(&token.access_token).await?;
+
     let streamer_names = c.streamers.keys().map(|s| s.as_str()).collect::<Vec<_>>();
 
-    let channels = common::get_channel_ids(&streamer_names, &token.clone().into())
+    let channels = common::get_channel_ids(&streamer_names, &token.access_token)
         .await
         .wrap_err_with(|| "Could not get streamer list. Is your token valid?")?;
     info!("Got streamer list");
 
     for (idx, id) in channels.iter().enumerate() {
         if id.is_none() {
-            return Err(eyre!(format!(
-                "Channel not found {}",
-                c.streamers.keys().skip(idx).take(1).collect::<Vec<_>>()[0]
-            )));
+            return Err(eyre!(format!("Channel not found {}", streamer_names[idx])));
         }
     }
 
@@ -112,6 +111,7 @@ async fn main() -> Result<()> {
         channels.clone(),
         args.simulate,
         token.clone(),
+        user_id,
     )));
     let pubsub = spawn(pubsub::PubSub::run(
         token.clone(),

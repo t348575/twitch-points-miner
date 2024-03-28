@@ -1,15 +1,8 @@
-use color_eyre::{eyre::Context, Result};
-use serde::{Deserialize, Serialize};
-use tokio::io::AsyncReadExt;
-use twitch_api::{
-    helix::Scope,
-    twitch_oauth2::{
-        client::Client,
-        tokens::{errors::RefreshTokenError, BearerTokenType},
-        AccessToken, ClientId, TwitchToken,
-    },
-    types::{UserIdRef, UserNameRef},
+use color_eyre::{
+    eyre::{eyre, Context},
+    Result,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::common::{CLIENT_ID, DEVICE_ID, USER_AGENT};
 
@@ -30,67 +23,8 @@ pub struct Token {
     pub token_type: String,
 }
 
-pub struct TwitchApiToken {
-    client_id: ClientId,
-    access_token: AccessToken,
-    scopes: [Scope; 0],
-}
-
-impl From<Token> for TwitchApiToken {
-    fn from(value: Token) -> Self {
-        TwitchApiToken {
-            client_id: ClientId::new(CLIENT_ID.to_owned()),
-            access_token: AccessToken::new(value.access_token),
-            scopes: [],
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl TwitchToken for TwitchApiToken {
-    fn token_type() -> BearerTokenType {
-        BearerTokenType::UserToken
-    }
-
-    fn client_id(&self) -> &ClientId {
-        &self.client_id
-    }
-
-    fn token(&self) -> &AccessToken {
-        &self.access_token
-    }
-
-    fn login(&self) -> Option<&UserNameRef> {
-        None
-    }
-
-    fn user_id(&self) -> Option<&UserIdRef> {
-        None
-    }
-
-    fn expires_in(&self) -> std::time::Duration {
-        std::time::Duration::MAX
-    }
-
-    fn scopes(&self) -> &[Scope] {
-        &self.scopes
-    }
-
-    async fn refresh_token<'a, C>(
-        &mut self,
-        _: &'a C,
-    ) -> Result<(), RefreshTokenError<<C as Client>::Error>>
-    where
-        Self: Sized,
-        C: Client,
-    {
-        Ok(())
-    }
-}
-
 pub async fn login(tokens: &str) -> Result<()> {
     let client = reqwest::Client::new();
-
     let res = client.post("https://id.twitch.tv/oauth2/device")
         .header("Client-Id", CLIENT_ID)
         .header("User-Agent", USER_AGENT)
@@ -102,12 +36,15 @@ pub async fn login(tokens: &str) -> Result<()> {
 
     let flow = res.json::<LoginFlowStart>().await.unwrap();
 
-    println!(
-        "Open https://www.twitch.tv/activate and enter this code: {}\nPress enter once done!",
-        flow.user_code
-    );
-    let mut buf = [0u8; 1];
-    tokio::io::stdin().read_exact(&mut buf).await?;
+    if !dialoguer::Confirm::new()
+        .with_prompt(format!(
+            "Open https://www.twitch.tv/activate and enter this code: {}",
+            flow.user_code
+        ))
+        .interact()?
+    {
+        return Err(eyre!("User cancelled login"));
+    }
 
     let res = client
         .post("https://id.twitch.tv/oauth2/token")

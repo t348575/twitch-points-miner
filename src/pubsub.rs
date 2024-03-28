@@ -46,10 +46,16 @@ pub struct PubSub {
     token: Token,
     #[serde(skip)]
     spade_url: Option<String>,
+    pub user_id: String,
 }
 
 impl PubSub {
-    pub fn new(channels: Vec<StarterInformation>, simulate: bool, token: Token) -> PubSub {
+    pub fn new(
+        channels: Vec<StarterInformation>,
+        simulate: bool,
+        token: Token,
+        user_id: String,
+    ) -> PubSub {
         let streamers = channels
             .into_iter()
             .map(|x| {
@@ -62,6 +68,7 @@ impl PubSub {
                         config: x.config,
                         points: 0,
                         last_points_refresh: Instant::now(),
+                        broadcast_id: None,
                     },
                 )
             })
@@ -71,6 +78,7 @@ impl PubSub {
             simulate,
             token,
             spade_url: None,
+            user_id,
         }
     }
 
@@ -108,7 +116,7 @@ impl PubSub {
         {
             let mut writer = pubsub.write().await;
             for (_, s) in writer.streamers.iter_mut() {
-                let points = get_channel_points(s.name.clone(), &token)
+                let points = get_channel_points(&s.name, &token)
                     .await
                     .context("Get channel points")?;
                 s.points = points;
@@ -192,7 +200,7 @@ impl PubSub {
             return Ok(());
         }
         if s.last_points_refresh.elapsed() > Duration::from_secs(5) {
-            let points = get_channel_points(s.name.clone(), &self.token)
+            let points = get_channel_points(&s.name, &self.token)
                 .await
                 .context("Get channel points")?;
             let s = self.streamers.get_mut(streamer).unwrap();
@@ -224,13 +232,16 @@ async fn event_listener(
     while let Some(events) = events_rx.recv().await {
         let mut writer = pubsub.write().await;
         match events {
-            Events::Live(id, status) => {
-                if let Some(s) = writer.streamers.get_mut(&id) {
-                    s.live = status;
-                    info!("Live status of {} is {}", s.name, status);
+            Events::Live {
+                channel_id,
+                broadcast_id,
+            } => {
+                if let Some(s) = writer.streamers.get_mut(&channel_id) {
+                    info!("Live status of {} is {}", s.name, broadcast_id.is_some());
+                    s.live = broadcast_id.is_some();
+                    s.broadcast_id = broadcast_id;
 
-                    let channel_id = id.as_str().parse()?;
-
+                    let channel_id = channel_id.as_str().parse()?;
                     let nonce = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
                     let topics = &[
                         Topics::PredictionsChannelV1(PredictionsChannelV1 { channel_id }),
