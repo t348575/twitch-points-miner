@@ -15,9 +15,9 @@ Check [example.config.yaml](example.config.yaml) for an example configuration.
 cargo build --release
 ```
 
-* Build with the feature `api` to enable the REST API server for management.
+* Build with the feature `web_api` to enable the REST API server for management.
 ```
-cargo build --release --features api
+cargo build --release --features web_api
 ```
 
 ## Docker image
@@ -29,4 +29,4 @@ docker run -i -t -v ./data:/data t348575/twitch-points-miner --token /data/token
 ```
 Once it is running and the login flow is complete, CTRL+C then just attach the tokens file in subsequent runs
 
-**Note**: The image comes with the `api` feature enabled.
+**Note**: The image comes with the `web_api` feature enabled.
