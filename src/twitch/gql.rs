@@ -6,7 +6,10 @@ use serde_json::json;
 use twitch_api::types::UserId;
 
 use super::{CLIENT_ID, DEVICE_ID, USER_AGENT};
-use crate::types::{Game, StreamerInfo};
+use crate::{
+    twitch::traverse_json,
+    types::{Game, StreamerInfo},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GqlRequest<T> {
@@ -53,18 +56,6 @@ pub async fn streamer_metadata(
 
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
-    pub struct Root {
-        pub data: Data,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub struct Data {
-        pub user: Option<User>,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
     pub struct User {
         pub id: UserId,
         pub stream: Option<Stream>,
@@ -98,15 +89,25 @@ pub async fn streamer_metadata(
         .collect::<Vec<_>>();
 
     let res = gql_req(access_token).json(&users).send().await?;
-    let items = res.json::<Vec<Root>>().await?;
+    let items = res.json::<serde_json::Value>().await?;
+    if !items.is_array() {
+        return Err(eyre!("Failed to get streamer metadata"));
+    }
 
-    Ok(items
+    let items = items.as_array().unwrap();
+    let items = items
         .into_iter()
-        .map(|x| match x.data.user {
-            Some(s) => Some((s.id.clone(), s.into())),
-            None => None,
+        .map(|x| {
+            let x = traverse_json(x, ".data.user").unwrap();
+            if x.is_null() {
+                None
+            } else {
+                let user = serde_json::from_value::<User>(x.clone()).unwrap();
+                Some((user.id.clone(), user.into()))
+            }
         })
-        .collect())
+        .collect();
+    Ok(items)
 }
 
 /// Assumes all the channels exist
@@ -171,10 +172,14 @@ pub async fn make_prediction(
     }
 
     let mut pred = GqlRequest::<Variables>::default();
-    pred.variables.input.event_id = event_id;
-    pred.variables.input.outcome_id = outcome_id;
-    pred.variables.input.points = points;
-    pred.variables.input.transaction_id = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
+    pred.variables = Variables {
+        input: Input {
+            event_id,
+            outcome_id,
+            points,
+            transaction_id: Alphanumeric.sample_string(&mut rand::thread_rng(), 16),
+        },
+    };
 
     let res = gql_req(access_token).json(&pred).send().await?;
 
@@ -184,8 +189,12 @@ pub async fn make_prediction(
     Ok(())
 }
 
-pub async fn get_channel_points(channel: &str, access_token: &str) -> Result<u32> {
-    #[derive(Serialize, Default, Debug)]
+/// (Points, Available points claim ID)
+pub async fn get_channel_points(
+    channel_names: &[&str],
+    access_token: &str,
+) -> Result<Vec<(u32, Option<String>)>> {
+    #[derive(Clone, Serialize, Default, Debug)]
     struct Variables<'a> {
         #[serde(rename = "channelLogin")]
         channel_login: &'a str,
@@ -205,69 +214,49 @@ pub async fn get_channel_points(channel: &str, access_token: &str) -> Result<u32
             }
         }
     }
-    let mut points = GqlRequest::<Variables>::default();
-    points.variables.channel_login = channel;
+    let reqs = vec![GqlRequest::<Variables>::default(); channel_names.len()]
+        .into_iter()
+        .zip(channel_names)
+        .map(|(mut req, name)| {
+            req.variables.channel_login = name;
+            req
+        })
+        .collect::<Vec<_>>();
 
-    let res = gql_req(access_token).json(&points).send().await?;
-
+    let res = gql_req(access_token).json(&reqs).send().await?;
     if !res.status().is_success() {
         return Err(eyre!("Failed to get channel points"));
     }
 
     let json = res.json::<serde_json::Value>().await?;
-    if !json.is_object() {
-        return Err(eyre!("Returned data is not an object"));
+    if !json.is_array() {
+        return Err(eyre!(
+            "Failed to get channel points, expected array as response"
+        ));
     }
 
-    let data = json
-        .as_object()
-        .unwrap()
-        .get("data")
-        .ok_or(eyre!("Failed to get data"))?;
-    let community = data
-        .as_object()
-        .ok_or(eyre!("Failed to get data as object"))?
-        .get("community")
-        .ok_or(eyre!("Streamer does not exist"))?;
-    let _self = community
-        .as_object()
-        .unwrap()
-        .get("channel")
-        .unwrap()
-        .get("self")
-        .unwrap();
-    let balance = _self
-        .as_object()
-        .unwrap()
-        .get("communityPoints")
-        .unwrap()
-        .get("balance")
-        .unwrap()
-        .as_u64()
-        .unwrap();
+    let arr = json.as_array().unwrap();
+    let items = arr
+        .into_iter()
+        .map(|result| {
+            let balance = traverse_json(result, ".data.community.channel.self.balance")
+                .unwrap()
+                .as_u64()
+                .unwrap() as u32;
+            let available_claim = traverse_json(
+                result,
+                ".data.community.channel.self.communityPoints.availableClaim.id",
+            )
+            .map(|x| x.as_str().unwrap().to_owned());
 
-    Ok(balance as u32)
+            (balance, available_claim)
+        })
+        .collect();
+
+    Ok(items)
 }
 
 pub async fn get_user_id(access_token: &str) -> Result<String> {
-    #[derive(Deserialize, Debug)]
-    #[serde(rename_all = "camelCase")]
-    pub struct Root {
-        pub data: Data,
-    }
-
-    #[derive(Deserialize, Debug)]
-    #[serde(rename_all = "camelCase")]
-    pub struct Data {
-        pub current_user: CurrentUser,
-    }
-
-    #[derive(Deserialize, Debug)]
-    #[serde(rename_all = "camelCase")]
-    pub struct CurrentUser {
-        pub id: String,
-    }
-
     let res = gql_req(access_token)
         .json(&json!({
             "operationName": "CoreActionsCurrentUser",
@@ -282,5 +271,53 @@ pub async fn get_user_id(access_token: &str) -> Result<String> {
         .send()
         .await?;
 
-    Ok(res.json::<Root>().await?.data.current_user.id)
+    let data = res.json::<serde_json::Value>().await?;
+    match traverse_json(&data, ".data.current_user.id").map(|x| x.as_str().unwrap().to_owned()) {
+        Some(x) => Ok(x),
+        None => Err(eyre!("Failed to get user ID")),
+    }
+}
+
+pub async fn claim_points(channel_id: &str, claim_id: &str, access_token: &str) -> Result<()> {
+    #[derive(Serialize, Default, Debug)]
+    struct Variables<'a> {
+        input: Input<'a>,
+    }
+
+    #[derive(Serialize, Default, Debug)]
+    struct Input<'a> {
+        #[serde(rename = "claimId")]
+        claim_id: &'a str,
+        #[serde(rename = "channelID")]
+        channel_id: &'a str,
+    }
+
+    impl<'a> Default for GqlRequest<Variables<'a>> {
+        fn default() -> Self {
+            Self {
+                operation_name: "ClaimCommunityPoints".to_string(),
+                extensions: json!({
+                    "persistedQuery": {
+                        "version": 1,
+                        "sha256Hash": "46aaeebe02c99afdf4fc97c7c0cba964124bf6b0af229395f1f6d1feed05b3d0",
+                    }
+                }),
+                variables: Default::default(),
+            }
+        }
+    }
+    let mut claim = GqlRequest::<Variables>::default();
+    claim.variables = Variables {
+        input: Input {
+            claim_id,
+            channel_id,
+        },
+    };
+
+    let res = gql_req(access_token).json(&claim).send().await?;
+
+    if !res.status().is_success() {
+        return Err(eyre!("Failed to claim points"));
+    }
+    Ok(())
 }

@@ -116,17 +116,7 @@ impl PubSub {
             token.access_token.clone(),
         ));
         spawn(view_points(pubsub.clone()));
-
-        {
-            let mut writer = pubsub.write().await;
-            for (_, s) in writer.streamers.iter_mut() {
-                let points = gql::get_channel_points(&s.info.channel_name, &token.access_token)
-                    .await
-                    .context("Get channel points")?;
-                s.points = points;
-                s.last_points_refresh = Instant::now();
-            }
-        }
+        spawn(update_and_claim_points(pubsub.clone()));
 
         while let Some(Ok(msg)) = read.next().await {
             if let Message::Text(m) = msg {
@@ -203,12 +193,20 @@ impl PubSub {
         if s.predictions[event_id].1 {
             return Ok(());
         }
-        if s.last_points_refresh.elapsed() > Duration::from_secs(5) {
-            let points = gql::get_channel_points(&s.info.channel_name, &self.token.access_token)
+        if s.last_points_refresh.elapsed() > Duration::from_secs(30) {
+            let points = gql::get_channel_points(&[&s.info.channel_name], &self.token.access_token)
                 .await
                 .context("Get channel points")?;
             let s = self.streamers.get_mut(streamer).unwrap();
-            s.points = points;
+            s.points = points[0].0;
+            if points[0].1.is_some() {
+                gql::claim_points(
+                    streamer.as_str(),
+                    &points[0].clone().1.unwrap(),
+                    &self.token.access_token,
+                )
+                .await?;
+            }
             s.last_points_refresh = Instant::now();
         }
 
@@ -396,6 +394,43 @@ async fn view_points(pubsub: Arc<RwLock<PubSub>>) -> Result<()> {
             &access_token,
         )
         .await?;
+
+        sleep(Duration::from_secs(60))
+    }
+}
+
+async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>) -> Result<()> {
+    let access_token = {
+        let reader = pubsub.read().await;
+        reader.token.access_token.clone()
+    };
+
+    loop {
+        let streamer = {
+            let pubsub = pubsub.read().await;
+            pubsub
+                .streamers
+                .iter()
+                .filter(|x| x.1.info.live)
+                .map(|x| (x.0.clone(), x.1.clone()))
+                .collect::<Vec<_>>()
+        };
+
+        let channel_names = streamer
+            .iter()
+            .map(|x| x.1.info.channel_name.as_str())
+            .collect::<Vec<_>>();
+        let points = gql::get_channel_points(&channel_names, &access_token).await?;
+
+        {
+            let mut pubsub = pubsub.write().await;
+            for (idx, (id, _)) in streamer.iter().enumerate() {
+                if let Some(s) = pubsub.streamers.get_mut(id) {
+                    s.points = points[idx].0;
+                    s.last_points_refresh = Instant::now();
+                }
+            }
+        }
 
         sleep(Duration::from_secs(60))
     }

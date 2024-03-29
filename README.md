@@ -5,6 +5,7 @@ A twitch points miner inspired by [Twitch-Channel-Points-Miner-v2](https://githu
 ## Features
 * Auto place bets on predictions
 * Watch stream to collect watch view points
+* Claim view point bonuses
 
 ## Configuration
 Check [example.config.yaml](example.config.yaml) for an example configuration.
