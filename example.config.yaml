@@ -1,5 +1,6 @@
 streamers:
-  example_streamer:
+  streamer_b: !Preset small
+  streamer_a: !Specific
     strategy: !smart
       high_odds:
       - low_threshold: 90.0
@@ -22,3 +23,14 @@ streamers:
           percent: 25.0
     filters:
     - !DelayPercentage 50.0
+presets:
+  small:
+    strategy: !smart
+      high_odds: null
+      default:
+        max_percentage: 0.0
+        min_percentage: 0.0
+        points:
+          max_value: 0
+          percent: 0.0
+    filters: []

@@ -24,6 +24,7 @@ serde_yaml = "0.9"
 chrono = "0.4"
 axum = { version = "0.7", optional = true, features = ["macros"] }
 dialoguer = "0.11"
+base64 = "0.22"
 
 [features]
 web_api = ["dep:axum"]

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use color_eyre::{eyre::eyre, Result};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -8,7 +9,8 @@ pub mod strategy;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub streamers: HashMap<String, StreamerConfig>,
+    pub streamers: HashMap<String, ConfigType>,
+    pub presets: Option<HashMap<String, StreamerConfig>>,
 }
 
 pub trait Normalize {
@@ -17,9 +19,51 @@ pub trait Normalize {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct StreamerConfig {
-    #[serde(default = "Default::default")]
     #[validate(nested)]
     pub strategy: strategy::Strategy,
     #[validate(length(min = 0))]
     pub filters: Vec<filters::Filter>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ConfigType {
+    Preset(String),
+    Specific(StreamerConfig),
+}
+
+impl Config {
+    pub fn parse_and_validate(&mut self) -> Result<()> {
+        for (_, c) in &mut self.streamers {
+            match c {
+                ConfigType::Preset(s_name) => {
+                    if self.presets.is_none() {
+                        return Err(eyre!(
+                            "No preset strategies given, so {s_name} cannot be used"
+                        ));
+                    }
+
+                    let s = self.presets.as_ref().unwrap().get(s_name);
+                    if s.is_none() {
+                        return Err(eyre!("Preset strategy {s_name} not found"));
+                    }
+                    s.unwrap().validate()?;
+                }
+                ConfigType::Specific(s) => {
+                    s.validate()?;
+                    s.strategy.normalize();
+                }
+            }
+        }
+
+        if let Some(p) = self.presets.as_mut() {
+            for (key, c) in p {
+                if self.streamers.contains_key(key) {
+                    return Err(eyre!("Preset {key} already in use as a streamer. Preset names cannot be the same as a streamer mentioned in the config"));
+                }
+
+                c.strategy.normalize();
+            }
+        }
+        Ok(())
+    }
 }

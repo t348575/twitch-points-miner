@@ -4,8 +4,8 @@ use validator::Validate;
 use super::Normalize;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Strategy {
-    #[serde(rename = "smart")]
     Smart(Smart),
 }
 
@@ -65,7 +65,7 @@ mod defaults {
     pub const fn _smart_high_odds_attempt_rate_default() -> f64 { 50.0 }
 }
 
-impl<'v_a> ::validator::ValidateNested<'v_a> for Strategy {
+impl<'v_a, 'a> ::validator::ValidateNested<'v_a> for Strategy {
     type Args = ();
     fn validate_nested(
         &self,
@@ -124,14 +124,6 @@ impl Normalize for DefaultPrediction {
     }
 }
 
-impl Normalize for Strategy {
-    fn normalize(&mut self) {
-        match self {
-            Strategy::Smart(s) => s.normalize(),
-        }
-    }
-}
-
 impl Points {
     pub fn value(&self, current_points: u32) -> u32 {
         if self.max_value == 0 {
@@ -155,5 +147,13 @@ impl Normalize for Points {
 impl Default for Strategy {
     fn default() -> Self {
         Self::Smart(Default::default())
+    }
+}
+
+impl Normalize for Strategy {
+    fn normalize(&mut self) {
+        match self {
+            Strategy::Smart(s) => s.normalize(),
+        }
     }
 }

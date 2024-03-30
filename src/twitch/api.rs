@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::URL_SAFE, Engine};
 use color_eyre::{eyre::eyre, Result};
 use serde::Serialize;
 use twitch_api::types::UserId;
@@ -21,10 +22,24 @@ pub async fn get_spade_url(streamer: &str) -> Result<String> {
     let page_text = res.text().await?;
     match page_text.split_once("https://static.twitchcdn.net/config/settings.") {
         Some((_, after)) => match after.split_once(".js") {
-            Some((pattern_js, _)) => Ok(format!(
-                "https://static.twitchcdn.net/config/settings.{}.js",
-                pattern_js
-            )),
+            Some((pattern_js, _)) => {
+                let res = client
+                    .get(format!(
+                        "https://static.twitchcdn.net/config/settings.{}.js",
+                        pattern_js
+                    ))
+                    .header("Client-Id", CLIENT_ID)
+                    .header("User-Agent", FIREFOX_USER_AGENT)
+                    .send()
+                    .await?;
+                match res.text().await?.split_once(r#""spade_url":""#) {
+                    Some((_, after)) => match after.split_once(r#"""#) {
+                        Some((url, _)) => Ok(url.to_string()),
+                        None => Err(eyre!("Failed to get spade url")),
+                    },
+                    None => Err(eyre!("Failed to get spade url")),
+                }
+            }
             None => Err(eyre!("Failed to get spade url")),
         },
         None => Err(eyre!("Failed to get spade url")),
@@ -32,6 +47,7 @@ pub async fn get_spade_url(streamer: &str) -> Result<String> {
 }
 
 pub async fn set_viewership(
+    user_name: String,
     user_id: u32,
     channel_id: UserId,
     info: StreamerInfo,
@@ -47,8 +63,10 @@ pub async fn set_viewership(
 
     let watch_event = Root {
         event: "minute-watched",
-        properties: MinuteWatched::from_streamer_info(user_id, channel_id, info),
+        properties: MinuteWatched::from_streamer_info(user_name, user_id, channel_id, info),
     };
+
+    let body = serde_json::to_string(&[watch_event])?;
 
     let client = reqwest::Client::new();
     let res = client
@@ -57,11 +75,14 @@ pub async fn set_viewership(
         .header("User-Agent", CHROME_USER_AGENT)
         .header("X-Device-Id", DEVICE_ID)
         .header("Authorization", format!("OAuth {}", access_token))
-        .json(&watch_event)
+        .body(URL_SAFE.encode(body))
         .send()
         .await?;
 
-    res.json::<serde_json::Value>().await?;
+    if !res.status().is_success() {
+        return Err(eyre!("Failed to set viewership"));
+    }
 
+    res.text().await?;
     Ok(())
 }

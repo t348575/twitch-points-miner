@@ -30,7 +30,7 @@ fn gql_req(access_token: &str) -> RequestBuilder {
 }
 
 pub async fn streamer_metadata(
-    users: &[&str],
+    channels: &[&str],
     access_token: &str,
 ) -> Result<Vec<Option<(UserId, StreamerInfo)>>> {
     #[derive(Debug, Default, Serialize)]
@@ -68,18 +68,18 @@ pub async fn streamer_metadata(
         pub game: Game,
     }
 
-    impl From<User> for StreamerInfo {
-        fn from(value: User) -> Self {
-            Self {
-                live: value.stream.is_some(),
-                broadcast_id: value.stream.clone().map(|x| x.id),
-                channel_name: String::new(),
-                game: value.stream.map(|x| x.game),
+    impl User {
+        fn into(self, channel_name: String) -> StreamerInfo {
+            StreamerInfo {
+                live: self.stream.is_some(),
+                broadcast_id: self.stream.clone().map(|x| x.id),
+                channel_name,
+                game: self.stream.map(|x| x.game),
             }
         }
     }
 
-    let users = users
+    let users = channels
         .iter()
         .map(|user| {
             let mut req = GqlRequest::<Variables>::default();
@@ -97,35 +97,18 @@ pub async fn streamer_metadata(
     let items = items.as_array().unwrap();
     let items = items
         .into_iter()
-        .map(|x| {
+        .zip(channels)
+        .map(|(x, channel_name)| {
             let x = traverse_json(x, ".data.user").unwrap();
             if x.is_null() {
                 None
             } else {
                 let user = serde_json::from_value::<User>(x.clone()).unwrap();
-                Some((user.id.clone(), user.into()))
+                Some((user.id.clone(), user.into(channel_name.to_string())))
             }
         })
         .collect();
     Ok(items)
-}
-
-/// Assumes all the channels exist
-/// (Channel ID, Broadcast ID)
-pub async fn live_channels(
-    channels: &[UserId],
-    access_token: &str,
-) -> Result<Vec<(UserId, Option<UserId>)>> {
-    let channels = streamer_metadata(
-        &channels.iter().map(|x| x.as_str()).collect::<Vec<_>>(),
-        access_token,
-    )
-    .await?;
-    Ok(channels
-        .into_iter()
-        .filter_map(|x| x)
-        .map(|x| (x.0, x.1.broadcast_id.map(|x| x.into())))
-        .collect())
 }
 
 pub async fn make_prediction(
@@ -239,10 +222,13 @@ pub async fn get_channel_points(
     let items = arr
         .into_iter()
         .map(|result| {
-            let balance = traverse_json(result, ".data.community.channel.self.balance")
-                .unwrap()
-                .as_u64()
-                .unwrap() as u32;
+            let balance = traverse_json(
+                result,
+                ".data.community.channel.self.communityPoints.balance",
+            )
+            .unwrap()
+            .as_u64()
+            .unwrap() as u32;
             let available_claim = traverse_json(
                 result,
                 ".data.community.channel.self.communityPoints.availableClaim.id",
@@ -256,7 +242,8 @@ pub async fn get_channel_points(
     Ok(items)
 }
 
-pub async fn get_user_id(access_token: &str) -> Result<String> {
+/// (UserID, UserName)
+pub async fn get_user_id(access_token: &str) -> Result<(String, String)> {
     let res = gql_req(access_token)
         .json(&json!({
             "operationName": "CoreActionsCurrentUser",
@@ -272,10 +259,15 @@ pub async fn get_user_id(access_token: &str) -> Result<String> {
         .await?;
 
     let data = res.json::<serde_json::Value>().await?;
-    match traverse_json(&data, ".data.current_user.id").map(|x| x.as_str().unwrap().to_owned()) {
-        Some(x) => Ok(x),
-        None => Err(eyre!("Failed to get user ID")),
-    }
+
+    let user_id = traverse_json(&data, ".data.currentUser.id")
+        .map(|x| x.as_str().unwrap().to_owned())
+        .ok_or(eyre!("Failed to get user ID"))?;
+    let user_name = traverse_json(&data, ".data.currentUser.login")
+        .map(|x| x.as_str().unwrap().to_owned())
+        .ok_or(eyre!("Failed to get user name"))?;
+
+    Ok((user_id, user_name))
 }
 
 pub async fn claim_points(channel_id: &str, claim_id: &str, access_token: &str) -> Result<()> {

@@ -7,12 +7,10 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::{fs, spawn};
 use tracing::info;
 use tracing_subscriber::fmt;
+use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
-use validator::Validate;
-
-use crate::config::Normalize;
 
 #[cfg(feature = "web_api")]
 mod web_api;
@@ -34,7 +32,7 @@ struct Args {
     #[cfg(feature = "web_api")]
     #[arg(short, long, default_value_t = String::from("0.0.0.0:3000"))]
     address: String,
-    /// Simulate
+    /// Simulate predictions, don't actually make them
     #[arg(short, long, default_value_t = false)]
     simulate: bool,
     /// Token file
@@ -46,7 +44,7 @@ struct Args {
 async fn main() -> Result<()> {
     color_eyre::install()?;
     tracing_subscriber::registry()
-        .with(fmt::layer())
+        .with(fmt::layer().with_span_events(FmtSpan::NEW | FmtSpan::CLOSE))
         .with(EnvFilter::from_env("LOG"))
         .init();
 
@@ -69,10 +67,7 @@ async fn main() -> Result<()> {
         return Err(eyre!("No streamers in config file"));
     }
 
-    for s in c.streamers.values_mut() {
-        s.validate()?;
-        s.strategy.normalize();
-    }
+    c.parse_and_validate()?;
 
     let token: twitch::auth::Token = serde_json::from_str(
         &fs::read_to_string(args.token)
@@ -82,10 +77,8 @@ async fn main() -> Result<()> {
     .context("Parsing tokens file")?;
     info!("Parsed tokens file");
 
-    let user_id = twitch::gql::get_user_id(&token.access_token).await?;
-
+    let user_info = twitch::gql::get_user_id(&token.access_token).await?;
     let streamer_names = c.streamers.keys().map(|s| s.as_str()).collect::<Vec<_>>();
-
     let channels = twitch::gql::streamer_metadata(&streamer_names, &token.access_token)
         .await
         .wrap_err_with(|| "Could not get streamer list. Is your token valid?")?;
@@ -99,17 +92,17 @@ async fn main() -> Result<()> {
 
     println!("Everything ok, starting twitch pubsub");
 
-    let (events_tx, events_rx) = mpsc::channel(128);
+    let (events_tx, events_rx) = mpsc::channel::<live::Events>(128);
     let channels = channels.into_iter().map(|x| x.unwrap());
     let pubsub_data = Arc::new(RwLock::new(pubsub::PubSub::new(
         channels.clone().zip(c.streamers.values()).collect(),
+        c.presets.unwrap_or_default(),
         args.simulate,
         token.clone(),
-        user_id,
+        user_info,
     )?));
     let pubsub = spawn(pubsub::PubSub::run(
         token.clone(),
-        c,
         events_rx,
         pubsub_data.clone(),
     ));
