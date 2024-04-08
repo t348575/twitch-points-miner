@@ -14,8 +14,10 @@ use tracing_subscriber::EnvFilter;
 
 #[cfg(feature = "web_api")]
 mod web_api;
-// mod auth;
-// mod common;
+
+#[cfg(feature = "analytics")]
+mod analytics;
+
 mod config;
 mod live;
 mod pubsub;
@@ -38,6 +40,10 @@ struct Args {
     /// Token file
     #[arg(short, long, default_value_t = String::from("tokens.json"))]
     token: String,
+    /// Enable analytics, enabled by default
+    #[cfg(feature = "analytics")]
+    #[arg(long, default_value_t = true)]
+    analytics: bool,
 }
 
 #[tokio::main]
@@ -92,6 +98,21 @@ async fn main() -> Result<()> {
 
     println!("Everything ok, starting twitch pubsub");
 
+    #[cfg(feature = "analytics")]
+    let analytics = if args.analytics {
+        Arc::new(analytics::AnalyticsWrapper::new(&c.analytics_db)?)
+    } else {
+        Arc::new(analytics::AnalyticsWrapper(tokio::sync::Mutex::new(None)))
+    };
+
+    #[cfg(feature = "analytics")]
+    for c in channels.iter().cloned().filter_map(|x| x) {
+        let id = c.0.as_str().parse::<i32>()?;
+        analytics
+            .execute(|analytics| analytics.upsert_streamer(id, c.1.channel_name))
+            .await?;
+    }
+
     let (events_tx, events_rx) = mpsc::channel::<live::Events>(128);
     let channels = channels.into_iter().map(|x| x.unwrap());
     let pubsub_data = Arc::new(RwLock::new(pubsub::PubSub::new(
@@ -100,7 +121,10 @@ async fn main() -> Result<()> {
         args.simulate,
         token.clone(),
         user_info,
+        #[cfg(feature = "analytics")]
+        analytics,
     )?));
+
     let pubsub = spawn(pubsub::PubSub::run(
         token.clone(),
         events_rx,

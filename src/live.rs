@@ -37,7 +37,7 @@ pub async fn run(
         .map(|x| x.1.channel_name.as_str())
         .collect::<Vec<_>>();
 
-    let mut interval = interval(Duration::from_secs(2 * 60));
+    let mut interval = interval(Duration::from_secs(60));
     loop {
         let live_channels = gql::streamer_metadata(&channel_names, &token.access_token)
             .await

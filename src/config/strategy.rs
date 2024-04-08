@@ -5,13 +5,15 @@ use super::Normalize;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub enum Strategy {
-    Smart(Smart),
+    Detailed(Detailed),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
+#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 #[validate(nested)]
-pub struct Smart {
+pub struct Detailed {
     #[validate(nested)]
     pub high_odds: Option<Vec<HighOdds>>,
     #[validate(nested)]
@@ -19,31 +21,33 @@ pub struct Smart {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
+#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 #[validate(nested)]
 pub struct DefaultPrediction {
     #[validate(range(min = 0.0, max = 100.0))]
-    #[serde(default = "defaults::_smart_high_threshold_default")]
+    #[serde(default = "defaults::_detailed_high_threshold_default")]
     pub max_percentage: f64,
     #[validate(range(min = 0.0, max = 100.0))]
-    #[serde(default = "defaults::_smart_low_threshold_default")]
+    #[serde(default = "defaults::_detailed_low_threshold_default")]
     pub min_percentage: f64,
     #[validate(nested)]
     pub points: Points,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
+#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 #[validate(nested)]
 pub struct HighOdds {
     #[validate(range(min = 0.0, max = 100.0))]
-    #[serde(default = "defaults::_smart_low_threshold_default")]
+    #[serde(default = "defaults::_detailed_low_threshold_default")]
     pub low_threshold: f64,
 
     #[validate(range(min = 0.0, max = 100.0))]
-    #[serde(default = "defaults::_smart_high_threshold_default")]
+    #[serde(default = "defaults::_detailed_high_threshold_default")]
     pub high_threshold: f64,
 
     #[validate(range(min = 0.0, max = 100.0))]
-    #[serde(default = "defaults::_smart_high_odds_attempt_rate_default")]
+    #[serde(default = "defaults::_detailed_high_odds_attempt_rate_default")]
     pub high_odds_attempt_rate: f64,
 
     #[validate(nested)]
@@ -60,9 +64,9 @@ pub struct Points {
 
 #[rustfmt::skip]
 mod defaults {
-    pub const fn _smart_low_threshold_default() -> f64 { 40.0 }
-    pub const fn _smart_high_threshold_default() -> f64 { 60.0 }
-    pub const fn _smart_high_odds_attempt_rate_default() -> f64 { 50.0 }
+    pub const fn _detailed_low_threshold_default() -> f64 { 40.0 }
+    pub const fn _detailed_high_threshold_default() -> f64 { 60.0 }
+    pub const fn _detailed_high_odds_attempt_rate_default() -> f64 { 50.0 }
 }
 
 impl<'v_a, 'a> ::validator::ValidateNested<'v_a> for Strategy {
@@ -94,14 +98,14 @@ impl Validate for Strategy {
             ::std::result::Result::Err(errors)
         };
         match self {
-            Strategy::Smart(t) => {
-                ::validator::ValidationErrors::merge(result, "Smart", t.validate())
+            Strategy::Detailed(t) => {
+                ::validator::ValidationErrors::merge(result, "detailed", t.validate())
             }
         }
     }
 }
 
-impl Normalize for Smart {
+impl Normalize for Detailed {
     fn normalize(&mut self) {
         self.default.normalize();
 
@@ -146,14 +150,14 @@ impl Normalize for Points {
 
 impl Default for Strategy {
     fn default() -> Self {
-        Self::Smart(Default::default())
+        Self::Detailed(Default::default())
     }
 }
 
 impl Normalize for Strategy {
     fn normalize(&mut self) {
         match self {
-            Strategy::Smart(s) => s.normalize(),
+            Strategy::Detailed(s) => s.normalize(),
         }
     }
 }

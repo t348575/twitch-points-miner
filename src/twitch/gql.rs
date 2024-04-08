@@ -114,7 +114,7 @@ pub async fn streamer_metadata(
 pub async fn make_prediction(
     points: u32,
     event_id: &str,
-    outcome_id: String,
+    outcome_id: &str,
     access_token: &str,
     simulate: bool,
 ) -> Result<()> {
@@ -133,7 +133,7 @@ pub async fn make_prediction(
         #[serde(rename = "eventID")]
         event_id: &'a str,
         #[serde(rename = "outcomeID")]
-        outcome_id: String,
+        outcome_id: &'a str,
         points: u32,
         #[serde(rename = "transactionID")]
         transaction_id: String,
@@ -270,7 +270,7 @@ pub async fn get_user_id(access_token: &str) -> Result<(String, String)> {
     Ok((user_id, user_name))
 }
 
-pub async fn claim_points(channel_id: &str, claim_id: &str, access_token: &str) -> Result<()> {
+pub async fn claim_points(channel_id: &str, claim_id: &str, access_token: &str) -> Result<u32> {
     #[derive(Serialize, Default, Debug)]
     struct Variables<'a> {
         input: Input<'a>,
@@ -278,7 +278,7 @@ pub async fn claim_points(channel_id: &str, claim_id: &str, access_token: &str) 
 
     #[derive(Serialize, Default, Debug)]
     struct Input<'a> {
-        #[serde(rename = "claimId")]
+        #[serde(rename = "claimID")]
         claim_id: &'a str,
         #[serde(rename = "channelID")]
         channel_id: &'a str,
@@ -311,5 +311,12 @@ pub async fn claim_points(channel_id: &str, claim_id: &str, access_token: &str) 
     if !res.status().is_success() {
         return Err(eyre!("Failed to claim points"));
     }
-    Ok(())
+
+    let mut res = res.json::<serde_json::Value>().await?;
+    let current_points = traverse_json(&mut res, ".data.claimCommunityPoints.currentPoints")
+        .unwrap()
+        .as_u64()
+        .unwrap();
+
+    Ok(current_points as u32)
 }

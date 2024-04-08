@@ -4,6 +4,8 @@ use color_eyre::{eyre::eyre, Result};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
+use self::{filters::Filter, strategy::Strategy};
+
 pub mod filters;
 pub mod strategy;
 
@@ -11,6 +13,9 @@ pub mod strategy;
 pub struct Config {
     pub streamers: HashMap<String, ConfigType>,
     pub presets: Option<HashMap<String, StreamerConfig>>,
+    #[cfg(feature = "analytics")]
+    #[serde(default = "defaults::_db_path_default")]
+    pub analytics_db: String,
 }
 
 pub trait Normalize {
@@ -18,11 +23,12 @@ pub trait Normalize {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct StreamerConfig {
     #[validate(nested)]
-    pub strategy: strategy::Strategy,
+    pub strategy: Strategy,
     #[validate(length(min = 0))]
-    pub filters: Vec<filters::Filter>,
+    pub filters: Vec<Filter>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,4 +72,9 @@ impl Config {
         }
         Ok(())
     }
+}
+
+#[rustfmt::skip]
+mod defaults {
+    pub fn _db_path_default() -> String { "analytics.db".to_owned() }
 }

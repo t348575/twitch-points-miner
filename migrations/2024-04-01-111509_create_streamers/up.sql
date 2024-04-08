@@ -1,0 +1,4 @@
+CREATE TABLE streamers (
+    id INTEGER PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL
+);

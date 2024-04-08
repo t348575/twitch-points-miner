@@ -1,21 +1,25 @@
+analytics_db: /my/custom/path/to/analytics
 streamers:
   streamer_b: !Preset small
   streamer_a: !Specific
-    strategy: !smart
+    strategy: !detailed
       high_odds:
-      - low_threshold: 90.0
-        high_threshold: 10.0
+        # bets placed outside this range
+      - low_threshold: 10.0
+        high_threshold: 90.0
         high_odds_attempt_rate: 1.0
         high_odds_points:
           max_value: 1000
           percent: 1.0
-      - low_threshold: 70.0
-        high_threshold: 30.0
+        # bets placed outside this range
+      - low_threshold: 30.0
+        high_threshold: 70.0
         high_odds_attempt_rate: 3.0
         high_odds_points:
           max_value: 5000
           percent: 5.0
       default:
+        # bets placed within this range
         max_percentage: 55.0
         min_percentage: 45.0
         points:
@@ -25,7 +29,7 @@ streamers:
     - !DelayPercentage 50.0
 presets:
   small:
-    strategy: !smart
+    strategy: !detailed
       high_odds: null
       default:
         max_percentage: 0.0
@@ -33,4 +37,6 @@ presets:
         points:
           max_value: 0
           percent: 0.0
-    filters: []
+    filters:
+    - !TotalUsers 300
+    - !DelaySeconds 30

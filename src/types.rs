@@ -1,14 +1,15 @@
 use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use serde::{Deserialize, Serialize, Serializer};
-use twitch_api::{pubsub::predictions::Event as PredictionEvent, types::UserId};
+use twitch_api::{pubsub::predictions::Event, types::UserId};
 
-use crate::config;
+use crate::config::StreamerConfig;
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct Streamer {
     pub info: StreamerInfo,
-    pub predictions: HashMap<String, (PredictionEvent, bool)>,
+    pub predictions: HashMap<String, (Event, bool)>,
     pub config: StreamerConfigRefWrapper,
     pub points: u32,
     #[serde(skip)]
@@ -16,9 +17,10 @@ pub struct Streamer {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct StreamerConfigRef {
     pub _type: ConfigTypeRef,
-    pub config: config::StreamerConfig,
+    pub config: StreamerConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -34,6 +36,26 @@ impl Serialize for StreamerConfigRefWrapper {
     }
 }
 
+#[cfg(feature = "web_api")]
+impl<'__s> utoipa::ToSchema<'__s> for StreamerConfigRefWrapper {
+    fn aliases() -> Vec<(&'__s str, utoipa::openapi::schema::Schema)> {
+        let s = if let utoipa::openapi::RefOr::T(x) = StreamerConfigRef::schema().1 {
+            x
+        } else {
+            panic!("Expected type, got ref")
+        };
+
+        vec![("StreamerConfigRefWrapper", s)]
+    }
+
+    fn schema() -> (
+        &'__s str,
+        utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
+    ) {
+        StreamerConfigRef::schema()
+    }
+}
+
 impl StreamerConfigRefWrapper {
     pub fn new(config: StreamerConfigRef) -> Self {
         Self(Arc::new(std::sync::RwLock::new(config)))
@@ -41,6 +63,7 @@ impl StreamerConfigRefWrapper {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub enum ConfigTypeRef {
     Preset,
     Specific,
@@ -48,6 +71,7 @@ pub enum ConfigTypeRef {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct StreamerInfo {
     pub broadcast_id: Option<UserId>,
     pub live: bool,
@@ -57,6 +81,7 @@ pub struct StreamerInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct Game {
     pub id: String,
     pub name: String,
