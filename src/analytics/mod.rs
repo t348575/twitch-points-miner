@@ -248,6 +248,7 @@ impl Analytics {
         Ok(entry_id)
     }
 
+    #[cfg(feature = "web_api")]
     pub fn get_live_prediction(
         &mut self,
         c_id: i32,

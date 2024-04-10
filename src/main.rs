@@ -112,24 +112,23 @@ async fn main() -> Result<()> {
         &token.access_token,
     )
     .await?;
+
+    #[cfg(feature = "analytics")]
     for (c, p) in channels.iter().zip(&points) {
-        #[cfg(feature = "analytics")]
-        {
-            let id = c.0.as_str().parse::<i32>()?;
-            let inserted = analytics
-                .execute(|analytics| analytics.insert_streamer(id, c.1.channel_name.clone()))
+        let id = c.0.as_str().parse::<i32>()?;
+        let inserted = analytics
+            .execute(|analytics| analytics.insert_streamer(id, c.1.channel_name.clone()))
+            .await?;
+        if inserted {
+            analytics
+                .execute(|analytics| {
+                    analytics.insert_points(
+                        id,
+                        p.0 as i32,
+                        analytics::model::PointsInfo::FirstEntry,
+                    )
+                })
                 .await?;
-            if inserted {
-                analytics
-                    .execute(|analytics| {
-                        analytics.insert_points(
-                            id,
-                            p.0 as i32,
-                            analytics::model::PointsInfo::FirstEntry,
-                        )
-                    })
-                    .await?;
-            }
         }
     }
 
