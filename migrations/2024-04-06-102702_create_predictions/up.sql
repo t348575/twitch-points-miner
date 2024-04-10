@@ -6,7 +6,7 @@ CREATE TABLE predictions (
     prediction_window BIGINT NOT NULL,
     outcomes TEXT NOT NULL,
     winning_outcome_id TEXT,
-    placed_bet TEXT,
+    placed_bet TEXT NOT NULL,
     created_at TIMESTAMP NOT NULL,
     closed_at TIMESTAMP,
     FOREIGN KEY (channel_id)

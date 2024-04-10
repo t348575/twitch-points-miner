@@ -14,16 +14,17 @@ use color_eyre::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
+use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 use tracing::info;
 use twitch_api::{
-    pubsub::predictions::{ByUser, Event},
+    pubsub::predictions::Event,
     types::{Timestamp, UserId},
 };
 use utoipa::{OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 
 #[cfg(feature = "analytics")]
-use crate::analytics::model::{Outcome, Outcomes, Point, PointsInfo, Prediction, PredictionBet};
+use crate::analytics::{model::*, TimelineResult};
 use crate::{
     config::{filters::Filter, strategy::*, StreamerConfig},
     pubsub::{prediction_logic, PubSub},
@@ -48,9 +49,9 @@ pub async fn get_api_server(
         ),
         components(
             schemas(
-                MakePrediction, PubSub, Streamer, Points, StreamerInfo, StreamerConfigRefWrapper,
+                MakePrediction, PubSub, StreamerState, Points, StreamerInfo, StreamerConfigRefWrapper,
                 ConfigTypeRef, StreamerConfig, Strategy, Filter, Detailed, Game, HighOdds, DefaultPrediction,
-                Event, ByUser, Timestamp, UserId
+                Event, Timestamp, UserId, LiveStreamer
             ),
         ),
         tags(
@@ -71,9 +72,11 @@ pub async fn get_api_server(
             PointsInfo::schema(),
             Prediction::schema(),
             PredictionBet::schema(),
+            PredictionBetWrapper::schema(),
             Outcomes::schema(),
             Outcome::schema(),
             Timeline::schema(),
+            TimelineResult::schema(),
         ];
         for s in schemas {
             components.schemas.insert(s.0.to_owned(), s.1);
@@ -85,8 +88,8 @@ pub async fn get_api_server(
                 __path_points_timeline::path_item(None),
             ),
             (
-                __path_points_timeline::path(),
-                __path_points_timeline::path_item(None),
+                __path_get_live_prediction::path(),
+                __path_get_live_prediction::path_item(None),
             ),
         ];
         for p in paths {
@@ -94,18 +97,21 @@ pub async fn get_api_server(
         }
     }
 
-    let timeline_router = Router::new()
-        .route("/points", get(points_timeline))
-        .route("/predictions", get(predictions_timeline));
-
-    let router = Router::new()
-        .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", openapi))
+    let api = Router::new()
         .route("/", get(app_state))
         .route("/:streamer", get(streamer))
         .route("/live", get(live_streamers))
-        .nest("/timeline", timeline_router)
-        .route("/make_prediction/:streamer", post(make_prediction))
-        .layer(Extension(token))
+        .route("/timeline", post(points_timeline))
+        .route("/live_prediction", get(get_live_prediction))
+        .route("/bet/:streamer", post(make_prediction))
+        .layer(Extension(token));
+
+    let router = Router::new()
+        .merge(SwaggerUi::new("/docs").url("/docs/openapi.json", openapi))
+        .nest_service("/", ServeDir::new("dist"))
+        .nest("/api", api)
+        .layer(CorsLayer::very_permissive())
+        .layer(TraceLayer::new_for_http())
         .with_state(pubsub);
 
     let listener = tokio::net::TcpListener::bind(address).await.unwrap();
@@ -114,9 +120,9 @@ pub async fn get_api_server(
 
 #[utoipa::path(
     get,
-    path = "/",
+    path = "/api",
     responses(
-        (status = 200, description = "Get the entire application state information", body = [PubSub])
+        (status = 200, description = "Get the entire application state information", body = PubSub)
     )
 )]
 async fn app_state(State(data): State<ApiState>) -> Json<PubSub> {
@@ -126,9 +132,9 @@ async fn app_state(State(data): State<ApiState>) -> Json<PubSub> {
 
 #[utoipa::path(
     get,
-    path = "/{streamer}",
+    path = "/api/{streamer}",
     responses(
-        (status = 200, description = "Get the entire application state information", body = [Streamer]),
+        (status = 200, description = "Get the entire application state information", body = [StreamerState]),
         (status = 404, description = "Could not find streamer")
     ),
     params(
@@ -143,7 +149,7 @@ async fn streamer(State(data): State<ApiState>, Path(streamer): Path<String>) ->
     }
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 struct MakePrediction {
     /// ID of the prediction
     event_id: String,
@@ -153,20 +159,21 @@ struct MakePrediction {
     outcome_id: String,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 struct Points(u32);
 
 #[utoipa::path(
     post,
-    path = "/make_prediction/{streamer}",
+    path = "/api/bet/{streamer}",
     responses(
         (status = 201, description = "Placed a bet", body = Points),
         (status = 202, description = "Did not place a bet, but no error occurred"),
         (status = 404, description = "Could not find streamer or event ID")
     ),
     params(
-        ("streamer" = String, Path, description = "Name of streamer to get state for")
-    )
+        ("streamer" = String, Path, description = "Name of streamer to get state for"),
+    ),
+    request_body = MakePrediction
 )]
 async fn make_prediction(
     State(data): State<ApiState>,
@@ -174,6 +181,7 @@ async fn make_prediction(
     Path(streamer): Path<String>,
     Json(payload): Json<MakePrediction>,
 ) -> impl IntoResponse {
+    info!("{payload:#?}");
     let mut data = data.write().await;
     let simulate = data.simulate;
 
@@ -273,10 +281,11 @@ async fn place_bet(
         analytics
             .0
             .execute(|analytics| {
+                let entry_id = analytics.last_prediction_id(channel_id, &event_id)?;
                 analytics.insert_points(
                     channel_id,
                     points[0].0 as i32,
-                    PointsInfo::Prediction(event_id),
+                    PointsInfo::Prediction(event_id, entry_id),
                 )
             })
             .await?;
@@ -284,32 +293,43 @@ async fn place_bet(
     Ok(())
 }
 
+#[derive(Serialize, ToSchema)]
+struct LiveStreamer {
+    id: i32,
+    state: StreamerState,
+}
+
 #[utoipa::path(
     get,
-    path = "/live",
+    path = "/api/live",
     responses(
-        (status = 200, description = "List of live streamers and their state", body = Vec<Streamer>)
+        (status = 200, description = "List of live streamers and their state", body = Vec<LiveStreamer>)
     )
 )]
-async fn live_streamers(State(data): State<ApiState>) -> Json<Vec<Streamer>> {
+async fn live_streamers(State(data): State<ApiState>) -> Json<Vec<LiveStreamer>> {
     let data = data.read().await;
     let items = data
         .streamers
-        .values()
-        .filter(|x| x.info.live)
-        .cloned()
+        .iter()
+        .filter(|x| x.1.info.live)
+        .map(|x| LiveStreamer {
+            id: x.0.as_str().parse().unwrap(),
+            state: x.1.clone(),
+        })
         .collect::<Vec<_>>();
     Json(items)
 }
 
 #[cfg(feature = "analytics")]
-#[derive(Deserialize, ToSchema, utoipa::IntoParams)]
+#[derive(Debug, Deserialize, ToSchema, utoipa::IntoParams)]
 /// Timeline information, RFC3339 strings
 struct Timeline {
     /// GE time
     from: String,
     /// LE time
     to: String,
+    /// Channels
+    channels: Vec<i32>,
 }
 
 #[cfg(feature = "analytics")]
@@ -349,17 +369,17 @@ impl IntoResponse for ApiError {
 
 #[cfg(feature = "analytics")]
 #[utoipa::path(
-    get,
-    path = "/timeline/points",
+    post,
+    path = "/api/timeline",
     responses(
-        (status = 200, description = "Timeline of point information in the specified range", body = Vec<Point>),
+        (status = 200, description = "Timeline of point information in the specified range", body = Vec<TimelineResult>),
     ),
-    params(Timeline)
+    request_body = Timeline
 )]
 async fn points_timeline(
     State(data): State<ApiState>,
-    axum::extract::Query(timeline): axum::extract::Query<Timeline>,
-) -> Result<Json<Vec<Point>>, ApiError> {
+    axum::extract::Json(timeline): axum::extract::Json<Timeline>,
+) -> Result<Json<Vec<TimelineResult>>, ApiError> {
     use chrono::FixedOffset;
 
     let from = chrono::DateTime::<FixedOffset>::parse_from_rfc3339(&timeline.from)?.naive_local();
@@ -368,7 +388,7 @@ async fn points_timeline(
     let writer = data.write().await;
     let res = writer
         .analytics
-        .execute(|analytics| analytics.points_timeline(from, to))
+        .execute(|analytics| analytics.timeline(from, to, &timeline.channels))
         .await?;
     Ok(Json(res))
 }
@@ -379,32 +399,34 @@ async fn points_timeline() -> StatusCode {
 }
 
 #[cfg(feature = "analytics")]
+#[derive(Deserialize, ToSchema, utoipa::IntoParams)]
+struct GetPredictionQuery {
+    prediction_id: String,
+    channel_id: i32,
+}
+
+#[cfg(feature = "analytics")]
 #[utoipa::path(
     get,
-    path = "/timeline/predictions",
+    path = "/api/live_prediction",
     responses(
-        (status = 200, description = "Timeline of prediction information in the specified range", body = Vec<Prediction>),
+        (status = 200, description = "Get live prediction", body = Option<Prediction>),
     ),
-    params(Timeline)
+    params(GetPredictionQuery)
 )]
-async fn predictions_timeline(
+async fn get_live_prediction(
+    axum::extract::Query(query): axum::extract::Query<GetPredictionQuery>,
     State(data): State<ApiState>,
-    axum::extract::Query(timeline): axum::extract::Query<Timeline>,
-) -> Result<Json<Vec<Prediction>>, ApiError> {
-    use chrono::FixedOffset;
-
-    let from = chrono::DateTime::<FixedOffset>::parse_from_rfc3339(&timeline.from)?.naive_local();
-    let to = chrono::DateTime::<FixedOffset>::parse_from_rfc3339(&timeline.to)?.naive_local();
-
+) -> Result<Json<Option<Prediction>>, ApiError> {
     let writer = data.write().await;
     let res = writer
         .analytics
-        .execute(|analytics| analytics.predictions_timeline(from, to))
+        .execute(|analytics| analytics.get_live_prediction(query.channel_id, &query.prediction_id))
         .await?;
     Ok(Json(res))
 }
 
 #[cfg(not(feature = "analytics"))]
-async fn predictions_timeline() -> StatusCode {
+async fn get_live_prediction() -> StatusCode {
     StatusCode::NOT_FOUND
 }

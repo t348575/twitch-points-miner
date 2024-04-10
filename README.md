@@ -6,6 +6,7 @@ A lightweight twitch points miner, using only a few MB of ram, inspired by [Twit
 * Auto place bets on predictions
 * Watch stream to collect view points
 * Claim view point bonuses
+* Web UI to interact with the app
 * REST API to manage app (Swagger docs at /docs)
 * Analytics logging all actions
 

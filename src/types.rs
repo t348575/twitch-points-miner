@@ -7,7 +7,7 @@ use crate::config::StreamerConfig;
 
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
-pub struct Streamer {
+pub struct StreamerState {
     pub info: StreamerInfo,
     pub predictions: HashMap<String, (Event, bool)>,
     pub config: StreamerConfigRefWrapper,

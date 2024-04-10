@@ -18,7 +18,17 @@ pub struct Streamer {
     pub name: String,
 }
 
-#[derive(Queryable, Selectable, Insertable, Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[derive(
+    Queryable,
+    Selectable,
+    Insertable,
+    Debug,
+    PartialEq,
+    Clone,
+    Serialize,
+    Deserialize,
+    QueryableByName,
+)]
 #[diesel(table_name = super::schema::points)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct Point {
@@ -33,10 +43,11 @@ pub struct Point {
 #[diesel(sql_type = Text)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub enum PointsInfo {
+    FirstEntry,
     Watching,
     CommunityPointsClaimed,
     /// prediction event id
-    Prediction(String),
+    Prediction(String, i32),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, FromSqlRow, AsExpression)]
@@ -57,13 +68,31 @@ pub struct Outcome {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, FromSqlRow, AsExpression)]
 #[diesel(sql_type = Text)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
+pub enum PredictionBetWrapper {
+    None,
+    Some(PredictionBet),
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, FromSqlRow, AsExpression)]
+#[diesel(sql_type = Text)]
+#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct PredictionBet {
     pub outcome_id: String,
     pub points: u32,
 }
 
-#[derive(Queryable, Selectable, Insertable, Debug, PartialEq, Clone, Serialize, Deserialize)]
-#[diesel(table_name = super::schema::predictions)]
+#[derive(
+    Queryable,
+    Selectable,
+    Insertable,
+    Debug,
+    PartialEq,
+    Clone,
+    Serialize,
+    Deserialize,
+    QueryableByName,
+)]
+#[diesel(table_name = super::schema::predictions, primary_key(id))]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct Prediction {
     pub channel_id: i32,
@@ -74,7 +103,7 @@ pub struct Prediction {
     pub outcomes: Outcomes,
     pub winning_outcome_id: Option<String>,
     #[diesel(sql_type = Text)]
-    pub placed_bet: Option<PredictionBet>,
+    pub placed_bet: PredictionBetWrapper,
     pub created_at: NaiveDateTime,
     pub closed_at: Option<NaiveDateTime>,
 }
@@ -140,13 +169,13 @@ impl ToSql<Text, Sqlite> for Outcomes {
     }
 }
 
-impl FromSql<Text, Sqlite> for PredictionBet {
+impl FromSql<Text, Sqlite> for PredictionBetWrapper {
     fn from_sql(bytes: SqliteValue<'_, '_, '_>) -> diesel::deserialize::Result<Self> {
         from_sql(bytes)
     }
 }
 
-impl ToSql<Text, Sqlite> for PredictionBet {
+impl ToSql<Text, Sqlite> for PredictionBetWrapper {
     fn to_sql<'b>(
         &'b self,
         out: &mut diesel::serialize::Output<'b, '_, Sqlite>,

@@ -27,7 +27,9 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
 use twitch_api::{
     pubsub::{
-        community_points::CommunityPointsUserV1, listen_command, predictions::PredictionsChannelV1,
+        community_points::CommunityPointsUserV1,
+        listen_command,
+        predictions::{Event, PredictionsChannelV1},
         unlisten_command, Response, TopicData, Topics,
     },
     types::UserId,
@@ -37,7 +39,9 @@ use crate::{
     config::{self, filters::filter_matches, ConfigType, StreamerConfig},
     live::Events,
     twitch::{api, auth::Token, gql, ws},
-    types::{ConfigTypeRef, Streamer, StreamerConfigRef, StreamerConfigRefWrapper, StreamerInfo},
+    types::{
+        ConfigTypeRef, StreamerConfigRef, StreamerConfigRefWrapper, StreamerInfo, StreamerState,
+    },
 };
 
 #[cfg(feature = "analytics")]
@@ -46,7 +50,7 @@ use crate::analytics::model::{PointsInfo, Prediction};
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct PubSub {
-    pub streamers: HashMap<UserId, Streamer>,
+    pub streamers: HashMap<UserId, StreamerState>,
     pub simulate: bool,
     #[serde(skip)]
     token: Token,
@@ -63,6 +67,8 @@ pub struct PubSub {
 impl PubSub {
     pub fn new(
         channels: Vec<((UserId, StreamerInfo), &ConfigType)>,
+        points: Vec<(u32, Option<String>)>,
+        active_predictions: Vec<Vec<(Event, bool)>>,
         presets: HashMap<String, StreamerConfig>,
         simulate: bool,
         token: Token,
@@ -96,18 +102,23 @@ impl PubSub {
 
         let streamers = channels
             .into_iter()
-            .map(|((channel_id, info), config)| {
+            .zip(points)
+            .zip(active_predictions)
+            .map(|((((channel_id, info), config), (p, _)), ap)| {
                 (
                     channel_id,
-                    Streamer {
+                    StreamerState {
                         config: configs[match config {
                             ConfigType::Preset(p) => p,
                             ConfigType::Specific(_) => &info.channel_name,
                         }]
                         .clone(),
                         info,
-                        predictions: HashMap::new(),
-                        points: 0,
+                        predictions: ap
+                            .into_iter()
+                            .map(|x| (x.0.channel_id.clone(), x))
+                            .collect::<HashMap<_, _>>(),
+                        points: p,
                         last_points_refresh: Instant::now(),
                     },
                 )
@@ -127,14 +138,14 @@ impl PubSub {
     }
 
     #[cfg(feature = "web_api")]
-    pub fn get_by_name(&self, name: &str) -> Option<&Streamer> {
+    pub fn get_by_name(&self, name: &str) -> Option<&StreamerState> {
         self.streamers
             .values()
             .find(|s| s.info.channel_name == name)
     }
 
     #[cfg(feature = "web_api")]
-    pub fn get_by_name_mut(&mut self, name: &str) -> Option<&mut Streamer> {
+    pub fn get_by_name_mut(&mut self, name: &str) -> Option<&mut StreamerState> {
         self.streamers
             .values_mut()
             .find(|s| s.info.channel_name == name)
@@ -157,7 +168,6 @@ impl PubSub {
         pubsub: Arc<RwLock<PubSub>>,
     ) -> Result<()> {
         let (write, mut read) = ws::connect_twitch_ws(&token.access_token).await?;
-
         let (tx, rx) = mpsc::channel::<String>(128);
 
         spawn(ws::writer(rx, write));
@@ -198,6 +208,11 @@ impl PubSub {
                 let event = reply.data.event;
                 let streamer = UserId::from_str(&event.channel_id)?;
 
+                if event.locked_at.is_some() && event.ended_at.is_none() {
+                    debug!("Event {} locked, but not yet ended", event.id);
+                    return Ok(());
+                }
+
                 if event.ended_at.is_none()
                     && self.streamers.contains_key(&streamer)
                     && !self.streamers[&streamer]
@@ -233,7 +248,7 @@ impl PubSub {
                                     prediction_window: event.prediction_window_seconds,
                                     outcomes: event.outcomes.into(),
                                     winning_outcome_id: None,
-                                    placed_bet: None,
+                                    placed_bet: crate::analytics::model::PredictionBetWrapper::None,
                                     created_at,
                                     closed_at,
                                 })
@@ -258,17 +273,12 @@ impl PubSub {
                         }
 
                         let channel_id = event.channel_id.parse()?;
-                        let points_value = match event.winning_outcome_id {
-                            Some(_) => {
-                                gql::get_channel_points(
-                                    &[&self.streamers.get(&streamer).unwrap().info.channel_name],
-                                    &self.token.access_token,
-                                )
-                                .await?[0]
-                                    .0
-                            }
-                            None => 0,
-                        };
+                        let points_value = gql::get_channel_points(
+                            &[&self.streamers.get(&streamer).unwrap().info.channel_name],
+                            &self.token.access_token,
+                        )
+                        .await?[0]
+                            .0;
                         let closed_at =
                             chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(
                                 event.ended_at.unwrap().as_str(),
@@ -277,10 +287,12 @@ impl PubSub {
 
                         self.analytics
                             .execute(|analytics| {
+                                let entry_id =
+                                    analytics.last_prediction_id(channel_id, &event.id)?;
                                 analytics.insert_points(
                                     channel_id,
                                     points_value as i32,
-                                    PointsInfo::Prediction(event.id.clone()),
+                                    PointsInfo::Prediction(event.id.clone(), entry_id),
                                 )?;
                                 analytics.end_prediction(
                                     &event.id,
@@ -303,8 +315,18 @@ impl PubSub {
                         .predictions
                         .contains_key(event.id.as_str())
                 {
+                    let event_id = event.id.clone();
                     info!("Prediction {} updated", event.id);
-                    self.try_prediction(&streamer, &event.id).await?;
+                    if let Some((e, _)) = self
+                        .streamers
+                        .get_mut(&streamer)
+                        .unwrap()
+                        .predictions
+                        .get_mut(&event_id)
+                    {
+                        *e = event;
+                    }
+                    self.try_prediction(&streamer, &event_id).await?;
                 }
             }
             TopicData::CommunityPointsUserV1 { topic, reply } => {
@@ -368,10 +390,11 @@ impl PubSub {
                 .await?;
                 self.analytics
                     .execute(|analytics| {
+                        let entry_id = analytics.last_prediction_id(channel_id, event_id)?;
                         analytics.insert_points(
                             channel_id,
                             points[0].0 as i32,
-                            PointsInfo::Prediction(event_id.to_owned()),
+                            PointsInfo::Prediction(event_id.to_owned(), entry_id),
                         )?;
 
                         analytics.place_bet(event_id, channel_id, &outcome_id, points_to_bet)
@@ -444,7 +467,7 @@ async fn event_listener(
 }
 
 pub async fn prediction_logic(
-    streamer: &Streamer,
+    streamer: &StreamerState,
     event_id: &str,
 ) -> Result<Option<(String, u32)>> {
     let prediction = streamer.predictions.get(event_id);
@@ -486,7 +509,7 @@ pub async fn prediction_logic(
                 } else {
                     total_points as f64 / o.total_points as f64
                 };
-                odds_percentage.push(if odds == 0.0 { 0.0 } else { 100.0 / odds });
+                odds_percentage.push(if odds == 0.0 { 0.0 } else { 1.0 / odds });
             }
 
             let mut rng = rand::thread_rng();
@@ -664,5 +687,226 @@ async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>) -> Result<()> {
         }
 
         sleep(Duration::from_secs(60)).await
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::{collections::HashMap, time::Instant};
+
+    use chrono::Utc;
+    use color_eyre::Result;
+    use twitch_api::{
+        pubsub::predictions::{Event, Outcome},
+        types::Timestamp,
+    };
+
+    use crate::{
+        config::{
+            strategy::{DefaultPrediction, HighOdds, Strategy},
+            StreamerConfig,
+        },
+        pubsub::prediction_logic,
+        types::*,
+    };
+
+    // For debugging
+    // color_eyre::install()?;
+    // env_logger::init();
+
+    fn outcome_from(id: u32, points: i64, users: i64) -> Outcome {
+        Outcome {
+            id: id.to_string(),
+            color: "".to_owned(),
+            title: id.to_string(),
+            total_points: points,
+            total_users: users,
+            top_predictors: Vec::new(),
+        }
+    }
+
+    fn get_prediction() -> StreamerState {
+        StreamerState {
+            info: StreamerInfo {
+                broadcast_id: None,
+                live: true,
+                channel_name: "a".to_owned(),
+                game: None,
+            },
+            predictions: HashMap::from([(
+                "pred-key-1".to_owned(),
+                (
+                    Event {
+                        id: "pred-key-1".to_owned(),
+                        channel_id: "channel-id-1".to_owned(),
+                        created_at: Timestamp::new(Utc::now().to_rfc3339()).unwrap(),
+                        ended_at: None,
+                        locked_at: None,
+                        outcomes: Vec::new(),
+                        prediction_window_seconds: 1500,
+                        status: "".to_owned(),
+                        title: "".to_owned(),
+                        winning_outcome_id: None,
+                    },
+                    false,
+                ),
+            )]),
+            config: StreamerConfigRefWrapper::new(StreamerConfigRef {
+                _type: ConfigTypeRef::Specific,
+                config: StreamerConfig {
+                    strategy: Strategy::default(),
+                    filters: vec![],
+                },
+            }),
+            points: 0,
+            last_points_refresh: Instant::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn detailed_strategy_default() -> Result<()> {
+        use crate::config::strategy as s;
+        let mut streamer = get_prediction();
+        {
+            let pred = streamer.predictions.get_mut("pred-key-1").unwrap();
+            streamer.points = 50000;
+            pred.0.outcomes = vec![
+                outcome_from(1, 5_000, 2),
+                outcome_from(2, 30_000, 14),
+                outcome_from(3, 45_000, 10),
+                outcome_from(4, 1_000, 1),
+            ];
+        }
+
+        let default_points_percentage = 0.15;
+        let default_max_points = 40000;
+
+        let mut config_ref = streamer.config.0.write().unwrap();
+        #[allow(irrefutable_let_patterns)]
+        if let Strategy::Detailed(d) = &mut config_ref.config.strategy {
+            d.default = DefaultPrediction {
+                max_percentage: 0.55,
+                min_percentage: 0.45,
+                points: s::Points {
+                    max_value: default_max_points,
+                    percent: default_points_percentage,
+                },
+            };
+
+            d.high_odds = Some(vec![
+                HighOdds {
+                    low_threshold: 0.10,
+                    high_threshold: 0.90,
+                    high_odds_attempt_rate: 0.00,
+                    high_odds_points: s::Points {
+                        max_value: 1000,
+                        percent: 0.001,
+                    },
+                },
+                HighOdds {
+                    low_threshold: 0.30,
+                    high_threshold: 0.70,
+                    high_odds_attempt_rate: 0.00,
+                    high_odds_points: s::Points {
+                        max_value: 5000,
+                        percent: 0.01,
+                    },
+                },
+            ]);
+        }
+
+        drop(config_ref);
+        let res = prediction_logic(&streamer, "pred-key-1").await?;
+        assert_eq!(res, None);
+
+        {
+            let pred = streamer.predictions.get_mut("pred-key-1").unwrap();
+            pred.0.outcomes[2] = outcome_from(3, 45_000, 10);
+        }
+        let res = prediction_logic(&streamer, "pred-key-1").await?;
+        assert_eq!(res, None);
+
+        {
+            let pred = streamer.predictions.get_mut("pred-key-1").unwrap();
+            pred.0.outcomes[2] = outcome_from(3, 40_000, 10);
+        }
+        let res = prediction_logic(&streamer, "pred-key-1").await?;
+        assert_eq!(
+            res,
+            Some((
+                "3".to_owned(),
+                (streamer.points as f64 * default_points_percentage) as u32
+            ))
+        );
+
+        streamer.points = 500000;
+        let res = prediction_logic(&streamer, "pred-key-1").await?;
+        assert_eq!(res, Some(("3".to_owned(), default_max_points)));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn detailed_strategy_high_odds() -> Result<()> {
+        use crate::config::strategy as s;
+        let mut streamer = get_prediction();
+        {
+            let pred = streamer.predictions.get_mut("pred-key-1").unwrap();
+            streamer.points = 50000;
+            pred.0.outcomes = vec![
+                outcome_from(1, 5_000, 2),
+                outcome_from(2, 30_000, 14),
+                outcome_from(3, 45_000, 10),
+                outcome_from(4, 1_000, 1),
+            ];
+        }
+
+        let high_odds_percentage = 0.001;
+
+        let mut config_ref = streamer.config.0.write().unwrap();
+        #[allow(irrefutable_let_patterns)]
+        if let Strategy::Detailed(d) = &mut config_ref.config.strategy {
+            d.default = DefaultPrediction {
+                max_percentage: 0.55,
+                min_percentage: 0.45,
+                points: s::Points {
+                    max_value: 40000,
+                    percent: 0.15,
+                },
+            };
+
+            d.high_odds = Some(vec![
+                HighOdds {
+                    low_threshold: 0.10,
+                    high_threshold: 0.90,
+                    high_odds_attempt_rate: 1.0,
+                    high_odds_points: s::Points {
+                        max_value: 1000,
+                        percent: high_odds_percentage,
+                    },
+                },
+                HighOdds {
+                    low_threshold: 0.30,
+                    high_threshold: 0.70,
+                    high_odds_attempt_rate: 0.00,
+                    high_odds_points: s::Points {
+                        max_value: 5000,
+                        percent: 0.01,
+                    },
+                },
+            ]);
+        }
+
+        drop(config_ref);
+        let res = prediction_logic(&streamer, "pred-key-1").await?;
+        assert_eq!(
+            res,
+            Some((
+                "1".to_owned(),
+                (streamer.points as f64 * high_odds_percentage) as u32
+            ))
+        );
+
+        Ok(())
     }
 }

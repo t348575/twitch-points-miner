@@ -3,7 +3,7 @@ use color_eyre::Result;
 use serde::{Deserialize, Serialize};
 use twitch_api::pubsub::predictions::Event;
 
-use crate::types::Streamer;
+use crate::types::StreamerState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
@@ -13,7 +13,7 @@ pub enum Filter {
     DelayPercentage(f64),
 }
 
-pub fn filter_matches(prediction: &Event, filter: &Filter, _: &Streamer) -> Result<bool> {
+pub fn filter_matches(prediction: &Event, filter: &Filter, _: &StreamerState) -> Result<bool> {
     let res = match filter {
         Filter::TotalUsers(t) => {
             prediction.outcomes.iter().fold(0, |a, b| a + b.total_users) as u32 >= *t

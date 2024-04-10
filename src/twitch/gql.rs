@@ -3,7 +3,7 @@ use rand::distributions::{Alphanumeric, DistString};
 use reqwest::RequestBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use twitch_api::types::UserId;
+use twitch_api::{pubsub, types::UserId};
 
 use super::{CLIENT_ID, DEVICE_ID, USER_AGENT};
 use crate::{
@@ -94,12 +94,12 @@ pub async fn streamer_metadata(
         return Err(eyre!("Failed to get streamer metadata"));
     }
 
-    let items = items.as_array().unwrap();
+    let items = items.as_array().unwrap().clone();
     let items = items
         .into_iter()
         .zip(channels)
-        .map(|(x, channel_name)| {
-            let x = traverse_json(x, ".data.user").unwrap();
+        .map(|(mut x, channel_name)| {
+            let x = traverse_json(&mut x, ".data.user").unwrap();
             if x.is_null() {
                 None
             } else {
@@ -218,19 +218,19 @@ pub async fn get_channel_points(
         ));
     }
 
-    let arr = json.as_array().unwrap();
+    let arr = json.as_array().unwrap().clone();
     let items = arr
         .into_iter()
-        .map(|result| {
+        .map(|mut result| {
             let balance = traverse_json(
-                result,
+                &mut result,
                 ".data.community.channel.self.communityPoints.balance",
             )
             .unwrap()
             .as_u64()
             .unwrap() as u32;
             let available_claim = traverse_json(
-                result,
+                &mut result,
                 ".data.community.channel.self.communityPoints.availableClaim.id",
             )
             .map(|x| x.as_str().unwrap().to_owned());
@@ -258,12 +258,12 @@ pub async fn get_user_id(access_token: &str) -> Result<(String, String)> {
         .send()
         .await?;
 
-    let data = res.json::<serde_json::Value>().await?;
+    let mut data = res.json::<serde_json::Value>().await?;
 
-    let user_id = traverse_json(&data, ".data.currentUser.id")
+    let user_id = traverse_json(&mut data, ".data.currentUser.id")
         .map(|x| x.as_str().unwrap().to_owned())
         .ok_or(eyre!("Failed to get user ID"))?;
-    let user_name = traverse_json(&data, ".data.currentUser.login")
+    let user_name = traverse_json(&mut data, ".data.currentUser.login")
         .map(|x| x.as_str().unwrap().to_owned())
         .ok_or(eyre!("Failed to get user name"))?;
 
@@ -319,4 +319,108 @@ pub async fn claim_points(channel_id: &str, claim_id: &str, access_token: &str) 
         .unwrap();
 
     Ok(current_points as u32)
+}
+
+pub async fn channel_points_context(
+    channel_names: &[&str],
+    access_token: &str,
+) -> Result<Vec<Vec<(pubsub::predictions::Event, bool)>>> {
+    #[derive(Serialize, Default, Debug)]
+    struct Variables<'a> {
+        count: u8,
+        #[serde(rename = "channelLogin")]
+        channel_login: &'a str,
+    }
+
+    impl<'a> GqlRequest<Variables<'a>> {
+        fn default(channel_name: &'a str) -> Self {
+            Self {
+                operation_name: "ChannelPointsPredictionContext".to_string(),
+                extensions: json!({
+                    "persistedQuery": {
+                        "version": 1,
+                        "sha256Hash": "beb846598256b75bd7c1fe54a80431335996153e358ca9c7837ce7bb83d7d383",
+                    }
+                }),
+                variables: Variables {
+                    count: 1,
+                    channel_login: channel_name,
+                },
+            }
+        }
+    }
+    let request = channel_names
+        .into_iter()
+        .map(|x| GqlRequest::<Variables>::default(*x))
+        .collect::<Vec<_>>();
+    let res = gql_req(access_token).json(&request).send().await?;
+    if !res.status().is_success() {
+        return Err(eyre!("Failed to claim points"));
+    }
+
+    let res = res.json::<Vec<serde_json::Value>>().await?;
+    let active_predictions = res
+        .into_iter()
+        .filter_map(|mut x| {
+            let channel_id = traverse_json(&mut x, ".data.community.channel.id")
+                .unwrap()
+                .clone();
+            let mut v = traverse_json(&mut x, ".data.community.channel.activePredictionEvents")
+                .unwrap()
+                .clone();
+            super::camel_to_snake_case_json(&mut v);
+
+            for item in v.as_array_mut().unwrap() {
+                item.as_object_mut()
+                    .unwrap()
+                    .insert("channel_id".to_owned(), channel_id.clone());
+                for outcome in traverse_json(item, ".outcomes")
+                    .unwrap()
+                    .as_array_mut()
+                    .unwrap()
+                {
+                    let x = outcome.as_object_mut().unwrap();
+                    *x.get_mut("top_predictors").unwrap() = serde_json::Value::Array(Vec::new());
+                }
+            }
+
+            match serde_json::from_value::<Vec<pubsub::predictions::Event>>(v) {
+                Ok(s) => {
+                    match traverse_json(&mut x, ".data.community.channel.self.recentPredictions") {
+                        Some(recent) => {
+                            let recent = recent
+                                .as_array()
+                                .unwrap()
+                                .clone()
+                                .into_iter()
+                                .map(|mut x| {
+                                    traverse_json(&mut x, ".event.id")
+                                        .unwrap()
+                                        .as_str()
+                                        .unwrap()
+                                        .to_owned()
+                                })
+                                .collect::<Vec<_>>();
+                            let items = s
+                                .into_iter()
+                                .map(|x| {
+                                    let bet_placed = recent
+                                        .iter()
+                                        .find(|y| (**y).eq(x.id.as_str()))
+                                        .and(Some(true))
+                                        .or(Some(false))
+                                        .unwrap();
+                                    (x, bet_placed)
+                                })
+                                .collect();
+                            Some(items)
+                        }
+                        None => Some(s.into_iter().map(|x| (x, false)).collect()),
+                    }
+                }
+                Err(_) => None,
+            }
+        })
+        .collect::<Vec<_>>();
+    Ok(active_predictions)
 }

@@ -1,7 +1,8 @@
 [package]
 name = "twitch-points-miner"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
+resolver = "2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -26,15 +27,20 @@ axum = { version = "0.7", optional = true, features = ["macros"] }
 dialoguer = "0.11"
 base64 = "0.22"
 libsqlite3-sys = { version = "0.28.0", features = ["bundled"], optional = true }
-diesel = { version = "2", features = ["sqlite", "chrono", "serde_json"], optional = true }
+diesel = { version = "2", features = ["sqlite", "chrono"], optional = true }
 diesel_migrations = { version = "2", features = ["sqlite"], optional = true }
 thiserror = "1"
 utoipa = { version = "4", features = ["axum_extras", "chrono"], optional = true }
 utoipa-swagger-ui = { version = "6", features = ["axum"], optional = true }
+tower-http = { version = "0.5.2", features = ["trace", "cors", "fs"], optional = true }
 
 [features]
-web_api = ["dep:axum", "dep:utoipa", "dep:utoipa-swagger-ui", "twitch_api/utoipa"]
+web_api = ["dep:axum", "dep:utoipa", "dep:utoipa-swagger-ui", "twitch_api/utoipa", "dep:tower-http"]
 analytics = ["dep:diesel", "dep:diesel_migrations", "dep:libsqlite3-sys"]
+
+[dev-dependencies]
+twitch_api = { features = ["pubsub", "unsupported", "time"], git = "https://github.com/t348575/twitch_api", branch = "hidden_pubsubs" }
+env_logger = "0.11"
 
 [profile.release]
 opt-level = 's'

@@ -1,13 +1,14 @@
 use chrono::{Local, NaiveDateTime};
 use diesel::{
-    result::DatabaseErrorKind, Connection, ConnectionError, ExpressionMethods, QueryDsl,
-    RunQueryDsl, SqliteConnection,
+    deserialize, result::DatabaseErrorKind, row::NamedRow, sqlite::Sqlite, Connection,
+    ConnectionError, ExpressionMethods, QueryDsl, QueryableByName, RunQueryDsl, SqliteConnection,
 };
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
+use serde::Serialize;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
-use crate::analytics::model::PredictionBet;
+use crate::analytics::model::{PredictionBet, PredictionBetWrapper};
 
 use self::model::{Outcomes, Point, PointsInfo, Prediction, Streamer};
 
@@ -24,8 +25,8 @@ pub enum AnalyticsError {
     NotInitialized,
     #[error("Could not connect to database: {0}")]
     ConnectionError(ConnectionError),
-    #[error("SQL execute error: {0}")]
-    SqlError(diesel::result::Error),
+    #[error("SQL execute error: {0} at {1}")]
+    SqlError(diesel::result::Error, String),
     #[error("Could not initialize database: {0}")]
     DbInit(Box<dyn std::error::Error + Send + Sync>),
 }
@@ -34,6 +35,12 @@ pub enum AnalyticsError {
 impl axum::response::IntoResponse for AnalyticsError {
     fn into_response(self) -> axum::response::Response {
         format!("{self:#?}").into_response()
+    }
+}
+
+impl AnalyticsError {
+    fn from_diesel_error(err: diesel::result::Error, context: String) -> AnalyticsError {
+        AnalyticsError::SqlError(err, context)
     }
 }
 
@@ -67,17 +74,22 @@ impl Analytics {
         Ok(Analytics { conn })
     }
 
-    pub fn upsert_streamer(&mut self, id: i32, name: String) -> Result<(), AnalyticsError> {
+    pub fn insert_streamer(&mut self, id: i32, name: String) -> Result<bool, AnalyticsError> {
         let res = diesel::insert_into(schema::streamers::table)
-            .values(&Streamer { id, name })
+            .values(&Streamer {
+                id,
+                name: name.clone(),
+            })
             .execute(&mut self.conn);
         if let Err(diesel::result::Error::DatabaseError(kind, _)) = res {
             if let DatabaseErrorKind::UniqueViolation = kind {
-                return Ok(());
+                return Ok(false);
             }
         }
-        res?;
-        Ok(())
+        res.map_err(|err| {
+            AnalyticsError::from_diesel_error(err, format!("Upsert streamer {name}"))
+        })?;
+        Ok(true)
     }
 
     pub fn insert_points(
@@ -90,10 +102,16 @@ impl Analytics {
             .values(&Point {
                 channel_id,
                 points_value,
-                points_info,
+                points_info: points_info.clone(),
                 created_at: Local::now().naive_local(),
             })
-            .execute(&mut self.conn)?;
+            .execute(&mut self.conn)
+            .map_err(|err| {
+                AnalyticsError::from_diesel_error(
+                    err,
+                    format!("Insert points for {channel_id} {points_info:?}"),
+                )
+            })?;
         Ok(())
     }
 
@@ -104,22 +122,39 @@ impl Analytics {
         pi: PointsInfo,
     ) -> Result<(), AnalyticsError> {
         use schema::points::dsl::*;
-        let current_pv: i32 = points
+        let current_pv: Result<i32, diesel::result::Error> = points
             .filter(channel_id.eq(c_id))
             .order(created_at.desc())
             .select(points_value)
-            .first(&mut self.conn)?;
-        if current_pv == pv {
-            return Ok(());
-        }
+            .first(&mut self.conn);
 
-        self.insert_points(c_id, pv, pi)
+        let mut func = || self.insert_points(c_id, pv, pi.clone());
+
+        match current_pv {
+            Ok(current_pv) => {
+                if current_pv == pv {
+                    Ok(())
+                } else {
+                    func()
+                }
+            }
+            Err(err) => match err {
+                diesel::result::Error::NotFound => func(),
+                err => Err(AnalyticsError::from_diesel_error(
+                    err,
+                    format!("Insert points if updated {c_id}, {pi:?}"),
+                )),
+            },
+        }
     }
 
     pub fn create_prediction(&mut self, prediction: &Prediction) -> Result<(), AnalyticsError> {
         diesel::insert_into(schema::predictions::table)
             .values(prediction)
-            .execute(&mut self.conn)?;
+            .execute(&mut self.conn)
+            .map_err(|err| {
+                AnalyticsError::from_diesel_error(err, format!("Create prediction {prediction:?}"))
+            })?;
         Ok(())
     }
 
@@ -134,11 +169,14 @@ impl Analytics {
         diesel::update(predictions)
             .filter(channel_id.eq(c_id))
             .filter(prediction_id.eq(p_id))
-            .set(placed_bet.eq(PredictionBet {
+            .set(placed_bet.eq(PredictionBetWrapper::Some(PredictionBet {
                 outcome_id: o_id.to_owned(),
                 points: p,
-            }))
-            .execute(&mut self.conn)?;
+            })))
+            .execute(&mut self.conn)
+            .map_err(|err| {
+                AnalyticsError::from_diesel_error(err, format!("Place bet on {c_id} event {p_id}"))
+            })?;
         Ok(())
     }
 
@@ -159,42 +197,98 @@ impl Analytics {
                 outcomes.eq(o_s),
                 closed_at.eq(Some(c_at)),
             ))
-            .execute(&mut self.conn)?;
+            .execute(&mut self.conn)
+            .map_err(|err| {
+                AnalyticsError::from_diesel_error(
+                    err,
+                    format!("End prediction on {c_id} event {p_id}"),
+                )
+            })?;
         Ok(())
     }
 
     #[cfg(feature = "web_api")]
-    pub fn points_timeline(
+    pub fn timeline(
         &mut self,
         from: NaiveDateTime,
         to: NaiveDateTime,
-    ) -> Result<Vec<Point>, AnalyticsError> {
-        use diesel::SelectableHelper;
-        use schema::points::dsl::*;
-        let items = points
-            .filter(created_at.ge(from))
-            .filter(created_at.le(to))
-            .order(created_at.asc())
-            .select(Point::as_select())
-            .load(&mut self.conn)?;
+        channels: &[i32],
+    ) -> Result<Vec<TimelineResult>, AnalyticsError> {
+        use diesel::sql_query;
+
+        let query = format!(
+            r#"select * from points left join predictions on points_info ->> '$.Prediction[0]' == prediction_id and points_info ->> '$.Prediction[1]' == predictions.id
+                where points.created_at >= '{}' and points.created_at <= '{}' and points.channel_id in ({}) order by points.created_at asc"#,
+            from,
+            to,
+            channels
+                .iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        let items = sql_query(query)
+            .get_results(&mut self.conn)
+            .map_err(|err| AnalyticsError::from_diesel_error(err, format!("Points timeline")))?;
         Ok(items)
     }
 
-    #[cfg(feature = "web_api")]
-    pub fn predictions_timeline(
+    pub fn last_prediction_id(&mut self, c_id: i32, p_id: &str) -> Result<i32, AnalyticsError> {
+        use schema::predictions::dsl::*;
+        let entry_id = predictions
+            .filter(channel_id.eq(c_id))
+            .filter(prediction_id.eq(p_id))
+            .order(created_at.desc())
+            .select(id)
+            .first(&mut self.conn)
+            .map_err(|err| {
+                AnalyticsError::from_diesel_error(err, format!("Last prediction by ID"))
+            })?;
+        Ok(entry_id)
+    }
+
+    pub fn get_live_prediction(
         &mut self,
-        from: NaiveDateTime,
-        to: NaiveDateTime,
-    ) -> Result<Vec<Prediction>, AnalyticsError> {
+        c_id: i32,
+        p_id: &str,
+    ) -> Result<Option<Prediction>, AnalyticsError> {
         use diesel::SelectableHelper;
         use schema::predictions::dsl::*;
-        let items = predictions
-            .filter(created_at.ge(from))
-            .filter(created_at.le(to))
-            .order(created_at.asc())
+        let res = predictions
+            .filter(channel_id.eq(c_id))
+            .filter(prediction_id.eq(p_id))
+            .order(id.desc())
             .select(Prediction::as_select())
-            .load(&mut self.conn)?;
-        Ok(items)
+            .first(&mut self.conn);
+        match res {
+            Ok(res) => Ok(Some(res)),
+            Err(err) => match err {
+                diesel::result::Error::NotFound => Ok(None),
+                err => Err(AnalyticsError::from_diesel_error(
+                    err,
+                    format!("Get live prediction {c_id}, {p_id}"),
+                )),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
+pub struct TimelineResult {
+    point: Point,
+    prediction: Option<Prediction>,
+}
+
+impl QueryableByName<Sqlite> for TimelineResult {
+    fn build<'a>(row: &impl NamedRow<'a, Sqlite>) -> deserialize::Result<Self> {
+        let prediction = match <Prediction as diesel::QueryableByName<Sqlite>>::build(row) {
+            Ok(p) => Some(p),
+            Err(_) => None,
+        };
+        let point = <Point as diesel::QueryableByName<Sqlite>>::build(row)?;
+        Ok(Self { point, prediction })
     }
 }
 
@@ -207,11 +301,5 @@ impl std::fmt::Debug for AnalyticsWrapper {
 impl From<ConnectionError> for AnalyticsError {
     fn from(value: ConnectionError) -> Self {
         AnalyticsError::ConnectionError(value)
-    }
-}
-
-impl From<diesel::result::Error> for AnalyticsError {
-    fn from(value: diesel::result::Error) -> Self {
-        AnalyticsError::SqlError(value)
     }
 }

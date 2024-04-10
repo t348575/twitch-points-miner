@@ -6,10 +6,6 @@ use color_eyre::eyre::{eyre, Context, Result};
 use tokio::sync::{mpsc, RwLock};
 use tokio::{fs, spawn};
 use tracing::info;
-use tracing_subscriber::fmt;
-use tracing_subscriber::fmt::format::FmtSpan;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
 #[cfg(feature = "web_api")]
@@ -49,10 +45,14 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
-    tracing_subscriber::registry()
-        .with(fmt::layer().with_span_events(FmtSpan::NEW | FmtSpan::CLOSE))
-        .with(EnvFilter::from_env("LOG"))
-        .init();
+    if let Ok(level) = std::env::var("LOG") {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                EnvFilter::new(&format!("twitch_points_miner={level}"))
+                    .add_directive(format!("tower_http::trace={level}").parse()?),
+            )
+            .init();
+    }
 
     let args = Args::parse();
 
@@ -96,8 +96,6 @@ async fn main() -> Result<()> {
         }
     }
 
-    println!("Everything ok, starting twitch pubsub");
-
     #[cfg(feature = "analytics")]
     let analytics = if args.analytics {
         Arc::new(analytics::AnalyticsWrapper::new(&c.analytics_db)?)
@@ -105,18 +103,55 @@ async fn main() -> Result<()> {
         Arc::new(analytics::AnalyticsWrapper(tokio::sync::Mutex::new(None)))
     };
 
-    #[cfg(feature = "analytics")]
-    for c in channels.iter().cloned().filter_map(|x| x) {
-        let id = c.0.as_str().parse::<i32>()?;
-        analytics
-            .execute(|analytics| analytics.upsert_streamer(id, c.1.channel_name))
-            .await?;
+    let channels = channels.into_iter().filter_map(|x| x).collect::<Vec<_>>();
+    let points = twitch::gql::get_channel_points(
+        &channels
+            .iter()
+            .map(|x| x.1.channel_name.as_str())
+            .collect::<Vec<_>>(),
+        &token.access_token,
+    )
+    .await?;
+    for (c, p) in channels.iter().zip(&points) {
+        #[cfg(feature = "analytics")]
+        {
+            let id = c.0.as_str().parse::<i32>()?;
+            let inserted = analytics
+                .execute(|analytics| analytics.insert_streamer(id, c.1.channel_name.clone()))
+                .await?;
+            if inserted {
+                analytics
+                    .execute(|analytics| {
+                        analytics.insert_points(
+                            id,
+                            p.0 as i32,
+                            analytics::model::PointsInfo::FirstEntry,
+                        )
+                    })
+                    .await?;
+            }
+        }
     }
 
+    let active_predictions = twitch::gql::channel_points_context(
+        &channels
+            .iter()
+            .map(|x| x.1.channel_name.as_str())
+            .collect::<Vec<_>>(),
+        &token.access_token,
+    )
+    .await?;
+
+    println!("Everything ok, starting twitch pubsub");
     let (events_tx, events_rx) = mpsc::channel::<live::Events>(128);
-    let channels = channels.into_iter().map(|x| x.unwrap());
     let pubsub_data = Arc::new(RwLock::new(pubsub::PubSub::new(
-        channels.clone().zip(c.streamers.values()).collect(),
+        channels
+            .clone()
+            .into_iter()
+            .zip(c.streamers.values())
+            .collect(),
+        points,
+        active_predictions,
         c.presets.unwrap_or_default(),
         args.simulate,
         token.clone(),
@@ -130,7 +165,10 @@ async fn main() -> Result<()> {
         events_rx,
         pubsub_data.clone(),
     ));
-    let live = spawn(live::run(token.clone(), events_tx, channels.collect()));
+    let live = spawn(live::run(token.clone(), events_tx, channels.clone()));
+
+    #[cfg(feature = "web_api")]
+    println!("Starting web api!");
 
     #[cfg(feature = "web_api")]
     let axum_server = web_api::get_api_server(args.address, pubsub_data, Arc::new(token)).await;

@@ -133,10 +133,11 @@ impl Points {
         if self.max_value == 0 {
             (self.percent * current_points as f64) as u32
         } else {
-            if self.max_value < current_points {
-                self.max_value
+            let percent_value = (self.percent * current_points as f64) as u32;
+            if percent_value < self.max_value {
+                percent_value
             } else {
-                (self.percent * current_points as f64) as u32
+                self.max_value
             }
         }
     }

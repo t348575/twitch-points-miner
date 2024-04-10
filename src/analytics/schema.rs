@@ -19,7 +19,7 @@ diesel::table! {
         prediction_window -> BigInt,
         outcomes -> Text,
         winning_outcome_id -> Nullable<Text>,
-        placed_bet -> Nullable<Text>,
+        placed_bet -> Text,
         created_at -> Timestamp,
         closed_at -> Nullable<Timestamp>,
     }

@@ -5,3 +5,4 @@
 config.yaml
 tokens.json
 *.db
+node_modules
