@@ -73,6 +73,7 @@ async fn main() -> Result<()> {
         return Err(eyre!("No streamers in config file"));
     }
 
+    let c_original = c.clone();
     c.parse_and_validate()?;
 
     let token: twitch::auth::Token = serde_json::from_str(
@@ -143,7 +144,14 @@ async fn main() -> Result<()> {
 
     println!("Everything ok, starting twitch pubsub");
     let (events_tx, events_rx) = mpsc::channel::<live::Events>(128);
+    let live = spawn(live::run(
+        Arc::new(token.clone()),
+        events_tx.clone(),
+        channels.clone(),
+    ));
     let pubsub_data = Arc::new(RwLock::new(pubsub::PubSub::new(
+        c_original,
+        args.config,
         channels
             .clone()
             .into_iter()
@@ -155,6 +163,10 @@ async fn main() -> Result<()> {
         args.simulate,
         token.clone(),
         user_info,
+        #[cfg(feature = "web_api")]
+        live,
+        #[cfg(feature = "web_api")]
+        events_tx,
         #[cfg(feature = "analytics")]
         analytics,
     )?));
@@ -164,7 +176,6 @@ async fn main() -> Result<()> {
         events_rx,
         pubsub_data.clone(),
     ));
-    let live = spawn(live::run(token.clone(), events_tx, channels.clone()));
 
     #[cfg(feature = "web_api")]
     println!("Starting web api!");
@@ -175,6 +186,7 @@ async fn main() -> Result<()> {
     #[cfg(feature = "web_api")]
     axum_server.await?;
     pubsub.await??;
+    #[cfg(not(feature = "web_api"))]
     live.await??;
 
     Ok(())

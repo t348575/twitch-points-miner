@@ -65,7 +65,7 @@ impl StreamerConfigRefWrapper {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub enum ConfigTypeRef {
-    Preset,
+    Preset(String),
     Specific,
 }
 

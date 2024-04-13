@@ -6,7 +6,7 @@ use std::{
 };
 
 use color_eyre::{
-    eyre::{eyre, Context},
+    eyre::{eyre, Context, ContextCompat},
     Result,
 };
 use futures::StreamExt;
@@ -15,6 +15,8 @@ use rand::{
     Rng,
 };
 use serde::Serialize;
+#[cfg(feature = "web_api")]
+use tokio::task::JoinHandle;
 use tokio::{
     spawn,
     sync::{
@@ -36,7 +38,7 @@ use twitch_api::{
 };
 
 use crate::{
-    config::{self, filters::filter_matches, ConfigType, StreamerConfig},
+    config::{self, filters::filter_matches, Config, ConfigType, StreamerConfig},
     live::Events,
     twitch::{api, auth::Token, gql, ws},
     types::{
@@ -47,9 +49,13 @@ use crate::{
 #[cfg(feature = "analytics")]
 use crate::analytics::model::{PointsInfo, Prediction};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Serialize)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct PubSub {
+    #[serde(skip)]
+    pub config: Config,
+    #[serde(skip)]
+    pub config_path: String,
     pub streamers: HashMap<UserId, StreamerState>,
     pub simulate: bool,
     #[serde(skip)]
@@ -59,13 +65,43 @@ pub struct PubSub {
     pub user_id: String,
     pub user_name: String,
     pub configs: HashMap<String, StreamerConfigRefWrapper>,
+    #[cfg(feature = "web_api")]
+    #[serde(skip)]
+    pub live_runner: Option<JoinHandle<Result<()>>>,
+    #[cfg(feature = "web_api")]
+    #[serde(skip)]
+    pub events_tx: Sender<Events>,
     #[cfg(feature = "analytics")]
     #[serde(skip)]
     pub analytics: Arc<crate::analytics::AnalyticsWrapper>,
 }
 
+impl Clone for PubSub {
+    fn clone(&self) -> Self {
+        Self {
+            streamers: self.streamers.clone(),
+            simulate: self.simulate.clone(),
+            token: self.token.clone(),
+            spade_url: self.spade_url.clone(),
+            user_id: self.user_id.clone(),
+            user_name: self.user_name.clone(),
+            configs: self.configs.clone(),
+            #[cfg(feature = "web_api")]
+            live_runner: None,
+            #[cfg(feature = "web_api")]
+            events_tx: self.events_tx.clone(),
+            #[cfg(feature = "analytics")]
+            analytics: self.analytics.clone(),
+            config: self.config.clone(),
+            config_path: self.config_path.clone(),
+        }
+    }
+}
+
 impl PubSub {
     pub fn new(
+        config: Config,
+        config_path: String,
         channels: Vec<((UserId, StreamerInfo), &ConfigType)>,
         points: Vec<(u32, Option<String>)>,
         active_predictions: Vec<Vec<(Event, bool)>>,
@@ -73,6 +109,8 @@ impl PubSub {
         simulate: bool,
         token: Token,
         user_info: (String, String),
+        #[cfg(feature = "web_api")] live_runner: JoinHandle<Result<()>>,
+        #[cfg(feature = "web_api")] events_tx: Sender<Events>,
         #[cfg(feature = "analytics")] analytics: Arc<crate::analytics::AnalyticsWrapper>,
     ) -> Result<PubSub> {
         let mut configs = channels
@@ -91,9 +129,9 @@ impl PubSub {
 
         let presets_iter = presets.into_iter().map(|(name, c)| {
             (
-                name,
+                name.clone(),
                 StreamerConfigRefWrapper::new(StreamerConfigRef {
-                    _type: ConfigTypeRef::Preset,
+                    _type: ConfigTypeRef::Preset(name),
                     config: c,
                 }),
             )
@@ -125,6 +163,8 @@ impl PubSub {
             })
             .collect();
         Ok(PubSub {
+            config,
+            config_path,
             streamers,
             simulate,
             token,
@@ -132,6 +172,10 @@ impl PubSub {
             user_id: user_info.0,
             user_name: user_info.1,
             configs,
+            #[cfg(feature = "web_api")]
+            live_runner: Some(live_runner),
+            #[cfg(feature = "web_api")]
+            events_tx,
             #[cfg(feature = "analytics")]
             analytics,
         })
@@ -152,7 +196,6 @@ impl PubSub {
     }
 
     #[cfg(feature = "web_api")]
-    #[cfg(feature = "analytics")]
     pub fn get_id_by_name(&self, name: &str) -> Option<&str> {
         for (k, v) in self.streamers.iter() {
             if v.info.channel_name == name {
@@ -167,7 +210,9 @@ impl PubSub {
         events_rx: Receiver<Events>,
         pubsub: Arc<RwLock<PubSub>>,
     ) -> Result<()> {
-        let (write, mut read) = ws::connect_twitch_ws(&token.access_token).await?;
+        let (write, mut read) = ws::connect_twitch_ws(&token.access_token)
+            .await
+            .context("Could not connect to pub sub")?;
         let (tx, rx) = mpsc::channel::<String>(128);
 
         spawn(ws::writer(rx, write));
@@ -208,126 +253,16 @@ impl PubSub {
                 let event = reply.data.event;
                 let streamer = UserId::from_str(&event.channel_id)?;
 
-                if event.locked_at.is_some() && event.ended_at.is_none() {
-                    debug!("Event {} locked, but not yet ended", event.id);
-                    return Ok(());
-                }
-
-                if event.ended_at.is_none()
-                    && self.streamers.contains_key(&streamer)
-                    && !self.streamers[&streamer]
-                        .predictions
-                        .contains_key(event.id.as_str())
-                {
-                    let s = self.streamers.get_mut(&streamer).unwrap();
-                    info!("Prediction {} started", event.id);
-                    let event_id = event.id.clone();
-                    s.predictions
-                        .insert(event.id.clone(), (event.clone(), false));
-
-                    #[cfg(feature = "analytics")]
-                    {
-                        let channel_id = streamer.as_str().parse()?;
-                        let created_at =
-                            chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(
-                                event.created_at.as_str(),
-                            )?
-                            .naive_local();
-                        let closed_at = if let Some(x) = event.ended_at {
-                            Some(chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(x.as_str())?.naive_local())
-                        } else {
-                            None
-                        };
-
-                        self.analytics
-                            .execute(|analytics| {
-                                analytics.create_prediction(&Prediction {
-                                    channel_id,
-                                    prediction_id: event.id,
-                                    title: event.title,
-                                    prediction_window: event.prediction_window_seconds,
-                                    outcomes: event.outcomes.into(),
-                                    winning_outcome_id: None,
-                                    placed_bet: crate::analytics::model::PredictionBetWrapper::None,
-                                    created_at,
-                                    closed_at,
-                                })
-                            })
-                            .await?;
-                    }
-
-                    self.try_prediction(&streamer, &event_id).await?;
-                } else if event.ended_at.is_some() {
-                    info!("Prediction {} ended", event.id);
-                    #[cfg(feature = "analytics")]
-                    {
-                        if self
-                            .streamers
-                            .get_mut(&streamer)
-                            .unwrap()
-                            .predictions
-                            .get(event.id.as_str())
-                            .is_none()
-                        {
-                            return Ok(());
-                        }
-
-                        let channel_id = event.channel_id.parse()?;
-                        let points_value = gql::get_channel_points(
-                            &[&self.streamers.get(&streamer).unwrap().info.channel_name],
-                            &self.token.access_token,
-                        )
-                        .await?[0]
-                            .0;
-                        let closed_at =
-                            chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(
-                                event.ended_at.unwrap().as_str(),
-                            )?
-                            .naive_local();
-
-                        self.analytics
-                            .execute(|analytics| {
-                                let entry_id =
-                                    analytics.last_prediction_id(channel_id, &event.id)?;
-                                analytics.insert_points(
-                                    channel_id,
-                                    points_value as i32,
-                                    PointsInfo::Prediction(event.id.clone(), entry_id),
-                                )?;
-                                analytics.end_prediction(
-                                    &event.id,
-                                    channel_id,
-                                    event.winning_outcome_id,
-                                    event.outcomes.into(),
-                                    closed_at,
-                                )
-                            })
-                            .await?;
-                    }
-
-                    self.streamers
-                        .get_mut(&streamer)
-                        .unwrap()
-                        .predictions
-                        .remove(event.id.as_str());
-                } else if self.streamers.contains_key(&streamer)
-                    && self.streamers[&streamer]
-                        .predictions
-                        .contains_key(event.id.as_str())
-                {
-                    let event_id = event.id.clone();
-                    info!("Prediction {} updated", event.id);
-                    if let Some((e, _)) = self
-                        .streamers
-                        .get_mut(&streamer)
-                        .unwrap()
-                        .predictions
-                        .get_mut(&event_id)
-                    {
-                        *e = event;
-                    }
-                    self.try_prediction(&streamer, &event_id).await?;
-                }
+                let name = self
+                    .streamers
+                    .get(&streamer)
+                    .context(format!("Streamer not found: {streamer}"))?
+                    .info
+                    .channel_name
+                    .clone();
+                self.handle_prediction_event(event, streamer)
+                    .await
+                    .context(format!("Handle prediction event: {name}"))?;
             }
             TopicData::CommunityPointsUserV1 { topic, reply } => {
                 debug!("Got reply {:#?}", topic);
@@ -341,6 +276,134 @@ impl PubSub {
                 }
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    async fn handle_prediction_event(&mut self, event: Event, streamer: UserId) -> Result<()> {
+        if event.locked_at.is_some() && event.ended_at.is_none() {
+            debug!("Event {} locked, but not yet ended", event.id);
+            return Ok(());
+        }
+
+        if event.ended_at.is_none()
+            && self.streamers.contains_key(&streamer)
+            && !self.streamers[&streamer]
+                .predictions
+                .contains_key(event.id.as_str())
+        {
+            let s = self.streamers.get_mut(&streamer).unwrap();
+            info!("Prediction {} started", event.id);
+            let event_id = event.id.clone();
+            s.predictions
+                .insert(event.id.clone(), (event.clone(), false));
+
+            #[cfg(feature = "analytics")]
+            {
+                let channel_id = streamer.as_str().parse()?;
+                let created_at =
+                    chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(
+                        event.created_at.as_str(),
+                    )?
+                    .naive_local();
+                let closed_at = if let Some(x) = event.ended_at {
+                    Some(
+                        chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(
+                            x.as_str(),
+                        )?
+                        .naive_local(),
+                    )
+                } else {
+                    None
+                };
+
+                self.analytics
+                    .execute(|analytics| {
+                        analytics.create_prediction(&Prediction {
+                            channel_id,
+                            prediction_id: event.id,
+                            title: event.title,
+                            prediction_window: event.prediction_window_seconds,
+                            outcomes: event.outcomes.into(),
+                            winning_outcome_id: None,
+                            placed_bet: crate::analytics::model::PredictionBetWrapper::None,
+                            created_at,
+                            closed_at,
+                        })
+                    })
+                    .await?;
+            }
+
+            self.try_prediction(&streamer, &event_id).await?;
+        } else if event.ended_at.is_some() {
+            info!("Prediction {} ended", event.id);
+            #[cfg(feature = "analytics")]
+            {
+                if self
+                    .streamers
+                    .get_mut(&streamer)
+                    .unwrap()
+                    .predictions
+                    .get(event.id.as_str())
+                    .is_none()
+                {
+                    return Ok(());
+                }
+
+                let channel_id = event.channel_id.parse()?;
+                let points_value = gql::get_channel_points(
+                    &[&self.streamers.get(&streamer).unwrap().info.channel_name],
+                    &self.token.access_token,
+                )
+                .await?[0]
+                    .0;
+                let closed_at =
+                    chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(
+                        event.ended_at.unwrap().as_str(),
+                    )?
+                    .naive_local();
+
+                self.analytics
+                    .execute(|analytics| {
+                        let entry_id = analytics.last_prediction_id(channel_id, &event.id)?;
+                        analytics.insert_points(
+                            channel_id,
+                            points_value as i32,
+                            PointsInfo::Prediction(event.id.clone(), entry_id),
+                        )?;
+                        analytics.end_prediction(
+                            &event.id,
+                            channel_id,
+                            event.winning_outcome_id,
+                            event.outcomes.into(),
+                            closed_at,
+                        )
+                    })
+                    .await?;
+            }
+
+            self.streamers
+                .get_mut(&streamer)
+                .unwrap()
+                .predictions
+                .remove(event.id.as_str());
+        } else if self.streamers.contains_key(&streamer)
+            && self.streamers[&streamer]
+                .predictions
+                .contains_key(event.id.as_str())
+        {
+            let event_id = event.id.clone();
+            info!("Prediction {} updated", event.id);
+            if let Some((e, _)) = self
+                .streamers
+                .get_mut(&streamer)
+                .unwrap()
+                .predictions
+                .get_mut(&event_id)
+            {
+                *e = event;
+            }
+            self.try_prediction(&streamer, &event_id).await?;
         }
         Ok(())
     }
@@ -403,6 +466,26 @@ impl PubSub {
             }
         }
         Ok(())
+    }
+
+    #[cfg(feature = "web_api")]
+    pub fn restart_live_watcher(&mut self) {
+        if let Some(s) = self.live_runner.take() {
+            s.abort();
+        }
+
+        let channels = self
+            .streamers
+            .iter()
+            .map(|x| (x.0.clone(), x.1.info.clone()))
+            .collect();
+        let live_runner = spawn(crate::live::run(
+            Arc::new(self.token.clone()),
+            self.events_tx.clone(),
+            channels,
+        ));
+
+        self.live_runner.replace(live_runner);
     }
 }
 
@@ -584,6 +667,7 @@ async fn view_points(pubsub: Arc<RwLock<PubSub>>) {
         }
 
         let (id, streamer) = streamer.unwrap();
+        debug!("Watching {}", streamer.info.channel_name);
         api::set_viewership(
             user_name,
             user_id,
@@ -598,7 +682,9 @@ async fn view_points(pubsub: Arc<RwLock<PubSub>>) {
 
     loop {
         if let Err(err) = inner(&pubsub).await {
-            error!("{err}");
+            if err.to_string() != "Spade URL not set" {
+                error!("{err}");
+            }
         }
         sleep(Duration::from_secs(10)).await;
     }

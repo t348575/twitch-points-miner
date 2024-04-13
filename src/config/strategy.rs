@@ -55,6 +55,7 @@ pub struct HighOdds {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
+#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 #[validate(nested)]
 pub struct Points {
     pub max_value: u32,

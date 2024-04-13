@@ -9,7 +9,7 @@ use self::{filters::Filter, strategy::Strategy};
 pub mod filters;
 pub mod strategy;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     pub streamers: HashMap<String, ConfigType>,
     pub presets: Option<HashMap<String, StreamerConfig>>,
@@ -32,6 +32,7 @@ pub struct StreamerConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub enum ConfigType {
     Preset(String),
     Specific(StreamerConfig),

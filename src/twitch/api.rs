@@ -8,41 +8,57 @@ use crate::{
     types::{MinuteWatched, StreamerInfo},
 };
 
-use super::{CHROME_USER_AGENT, CLIENT_ID, FIREFOX_USER_AGENT};
+use super::{CHROME_USER_AGENT, CLIENT_ID};
 
 pub async fn get_spade_url(streamer: &str) -> Result<String> {
     let client = reqwest::Client::new();
     let res = client
         .get(format!("https://www.twitch.tv/{streamer}"))
-        .header("Client-Id", CLIENT_ID)
-        .header("User-Agent", FIREFOX_USER_AGENT)
+        .header("User-Agent", CHROME_USER_AGENT)
         .send()
         .await?;
 
     let page_text = res.text().await?;
-    match page_text.split_once("https://static.twitchcdn.net/config/settings.") {
-        Some((_, after)) => match after.split_once(".js") {
-            Some((pattern_js, _)) => {
-                let res = client
-                    .get(format!(
-                        "https://static.twitchcdn.net/config/settings.{}.js",
-                        pattern_js
-                    ))
-                    .header("Client-Id", CLIENT_ID)
-                    .header("User-Agent", FIREFOX_USER_AGENT)
-                    .send()
-                    .await?;
-                match res.text().await?.split_once(r#""spade_url":""#) {
-                    Some((_, after)) => match after.split_once(r#"""#) {
-                        Some((url, _)) => Ok(url.to_string()),
-                        None => Err(eyre!("Failed to get spade url")),
-                    },
-                    None => Err(eyre!("Failed to get spade url")),
+
+    async fn inner(client: &reqwest::Client, text: &str, uri: &str) -> Result<String> {
+        match text.split_once(uri) {
+            Some((_, after)) => match after.split_once(".js") {
+                Some((pattern_js, _)) => {
+                    let res = client
+                        .get(format!("{uri}{pattern_js}.js"))
+                        .header("User-Agent", CHROME_USER_AGENT)
+                        .send()
+                        .await?;
+                    match res.text().await?.split_once(r#""spade_url":""#) {
+                        Some((_, after)) => match after.split_once(r#"""#) {
+                            Some((url, _)) => Ok(url.to_string()),
+                            None => Err(eyre!(r#"Failed to get spade url: ""#)),
+                        },
+                        None => Err(eyre!(r#"Failed to get spade url: "spade_url":""#)),
+                    }
                 }
-            }
-            None => Err(eyre!("Failed to get spade url")),
-        },
-        None => Err(eyre!("Failed to get spade url")),
+                None => Err(eyre!("Failed to get spade url: .js")),
+            },
+            None => Err(eyre!("Failed to get spade url: {uri}")),
+        }
+    }
+
+    match inner(
+        &client,
+        &page_text,
+        "https://static.twitchcdn.net/config/settings.",
+    )
+    .await
+    {
+        Ok(s) => Ok(s),
+        Err(_) => {
+            inner(
+                &client,
+                &page_text,
+                "https://assets.twitch.tv/config/settings.",
+            )
+            .await
+        }
     }
 }
 

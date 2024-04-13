@@ -321,34 +321,35 @@ pub async fn claim_points(channel_id: &str, claim_id: &str, access_token: &str) 
     Ok(current_points as u32)
 }
 
+#[derive(Serialize, Default, Debug)]
+struct Variables<'a> {
+    count: u8,
+    #[serde(rename = "channelLogin")]
+    channel_login: &'a str,
+}
+
+impl<'a> GqlRequest<Variables<'a>> {
+    fn default(channel_name: &'a str) -> Self {
+        Self {
+            operation_name: "ChannelPointsPredictionContext".to_string(),
+            extensions: json!({
+                "persistedQuery": {
+                    "version": 1,
+                    "sha256Hash": "beb846598256b75bd7c1fe54a80431335996153e358ca9c7837ce7bb83d7d383",
+                }
+            }),
+            variables: Variables {
+                count: 1,
+                channel_login: channel_name,
+            },
+        }
+    }
+}
+
 pub async fn channel_points_context(
     channel_names: &[&str],
     access_token: &str,
 ) -> Result<Vec<Vec<(pubsub::predictions::Event, bool)>>> {
-    #[derive(Serialize, Default, Debug)]
-    struct Variables<'a> {
-        count: u8,
-        #[serde(rename = "channelLogin")]
-        channel_login: &'a str,
-    }
-
-    impl<'a> GqlRequest<Variables<'a>> {
-        fn default(channel_name: &'a str) -> Self {
-            Self {
-                operation_name: "ChannelPointsPredictionContext".to_string(),
-                extensions: json!({
-                    "persistedQuery": {
-                        "version": 1,
-                        "sha256Hash": "beb846598256b75bd7c1fe54a80431335996153e358ca9c7837ce7bb83d7d383",
-                    }
-                }),
-                variables: Variables {
-                    count: 1,
-                    channel_login: channel_name,
-                },
-            }
-        }
-    }
     let request = channel_names
         .into_iter()
         .map(|x| GqlRequest::<Variables>::default(*x))
@@ -393,12 +394,9 @@ pub async fn channel_points_context(
                                 .unwrap()
                                 .clone()
                                 .into_iter()
-                                .map(|mut x| {
-                                    traverse_json(&mut x, ".event.id")
-                                        .unwrap()
-                                        .as_str()
-                                        .unwrap()
-                                        .to_owned()
+                                .filter_map(|mut x| match traverse_json(&mut x, ".event.id") {
+                                    Some(s) => Some(s.as_str().unwrap().to_owned()),
+                                    None => None,
                                 })
                                 .collect::<Vec<_>>();
                             let items = s

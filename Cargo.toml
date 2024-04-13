@@ -32,7 +32,7 @@ diesel_migrations = { version = "2", features = ["sqlite"], optional = true }
 thiserror = "1"
 utoipa = { version = "4", features = ["axum_extras", "chrono"], optional = true }
 utoipa-swagger-ui = { version = "6", features = ["axum"], optional = true }
-tower-http = { version = "0.5.2", features = ["trace", "cors", "fs"], optional = true }
+tower-http = { version = "0.5", features = ["trace", "cors", "fs"], optional = true }
 
 [features]
 web_api = ["dep:axum", "dep:utoipa", "dep:utoipa-swagger-ui", "twitch_api/utoipa", "dep:tower-http"]
