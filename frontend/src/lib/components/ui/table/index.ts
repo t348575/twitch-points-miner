@@ -6,6 +6,7 @@ import Footer from "./table-footer.svelte";
 import Head from "./table-head.svelte";
 import Header from "./table-header.svelte";
 import Row from "./table-row.svelte";
+import Checkbox from "./table-checkbox.svelte"
 
 export {
 	Root,
@@ -25,4 +26,5 @@ export {
 	Head as TableHead,
 	Header as TableHeader,
 	Row as TableRow,
+	Checkbox as TableCheckbox
 };

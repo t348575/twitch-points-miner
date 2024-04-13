@@ -20,55 +20,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/bet/{streamer}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["make_prediction"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/live": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["live_streamers"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/live_prediction": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["get_live_prediction"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/timeline": {
+    "/api/analytics/timeline": {
         parameters: {
             query?: never;
             header?: never;
@@ -84,7 +36,103 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/{streamer}": {
+    "/api/predictions/bet/{streamer}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["make_prediction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/predictions/live": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_live_prediction"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/streamers/config/{channel_name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["update_config"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/streamers/live": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["live_streamers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/streamers/mine/{channel_name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["mine_streamer"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/streamers/mine/{channel_name}/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["remove_streamer"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/streamers/{streamer}": {
         parameters: {
             query?: never;
             header?: never;
@@ -104,8 +152,14 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** @enum {string} */
-        ConfigTypeRef: "Preset" | "Specific";
+        ConfigType: {
+            Preset: string;
+        } | {
+            Specific: components["schemas"]["StreamerConfig"];
+        };
+        ConfigTypeRef: {
+            Preset: string;
+        } | "Specific";
         DefaultPrediction: {
             /** Format: double */
             max_percentage?: number;
@@ -179,6 +233,9 @@ export interface components {
              */
             points?: number | null;
         };
+        MineStreamer: {
+            config: components["schemas"]["ConfigType"];
+        };
         Outcome: {
             id: string;
             title: string;
@@ -197,8 +254,12 @@ export interface components {
             /** Format: int32 */
             points_value: number;
         };
-        /** Format: int32 */
-        Points: number;
+        Points: {
+            /** Format: int32 */
+            max_value: number;
+            /** Format: double */
+            percent: number;
+        };
         PointsInfo: "FirstEntry" | "Watching" | "CommunityPointsClaimed" | {
             /** @description prediction event id */
             Prediction: Record<string, never>[];
@@ -308,6 +369,30 @@ export interface operations {
             };
         };
     };
+    points_timeline: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Timeline"];
+            };
+        };
+        responses: {
+            /** @description Timeline of point information in the specified range */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TimelineResult"][];
+                };
+            };
+        };
+    };
     make_prediction: {
         parameters: {
             query?: never;
@@ -349,26 +434,6 @@ export interface operations {
             };
         };
     };
-    live_streamers: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description List of live streamers and their state */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["LiveStreamer"][];
-                };
-            };
-        };
-    };
     get_live_prediction: {
         parameters: {
             query: {
@@ -392,27 +457,110 @@ export interface operations {
             };
         };
     };
-    points_timeline: {
+    update_config: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Name of streamer whose config to update */
+                channel_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfigType"];
+            };
+        };
+        responses: {
+            /** @description Successfully updated streamer config */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Could not find streamer */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    live_streamers: {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["Timeline"];
-            };
-        };
+        requestBody?: never;
         responses: {
-            /** @description Timeline of point information in the specified range */
+            /** @description List of live streamers and their state */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TimelineResult"][];
+                    "application/json": components["schemas"]["LiveStreamer"][];
                 };
+            };
+        };
+    };
+    mine_streamer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Name of streamer to watch */
+                channel_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MineStreamer"];
+            };
+        };
+        responses: {
+            /** @description Add streamer to mine */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    remove_streamer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Name of streamer to delete */
+                channel_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successfully removed streamer from the mine list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Could not find streamer */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
