@@ -36,6 +36,102 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/config/presets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_presets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/config/presets/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["add_update_preset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/config/presets/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["remove_preset"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/config/streamer/{channel_name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["update_streamer_config"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/config/watch_priority": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_watch_priority"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/config/watch_priority/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["update_watch_priority"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/predictions/bet/{streamer}": {
         parameters: {
             query?: never;
@@ -62,22 +158,6 @@ export interface paths {
         get: operations["get_live_prediction"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/streamers/config/{channel_name}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["update_config"];
         delete?: never;
         options?: never;
         head?: never;
@@ -152,6 +232,10 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AddUpdatePreset: {
+            config: components["schemas"]["StreamerConfig"];
+            name: string;
+        };
         ConfigType: {
             Preset: string;
         } | {
@@ -169,7 +253,15 @@ export interface components {
         };
         Detailed: {
             default: components["schemas"]["DefaultPrediction"];
-            high_odds?: components["schemas"]["HighOdds"][] | null;
+            detailed?: components["schemas"]["DetailedOdds"][] | null;
+        };
+        DetailedOdds: {
+            _type: components["schemas"]["OddsComparisonType"];
+            /** Format: double */
+            attempt_rate: number;
+            points: components["schemas"]["Points"];
+            /** Format: double */
+            threshold: number;
         };
         /** @description Event */
         Event: {
@@ -208,15 +300,6 @@ export interface components {
             id: string;
             name: string;
         };
-        HighOdds: {
-            /** Format: double */
-            high_odds_attempt_rate?: number;
-            high_odds_points: components["schemas"]["Points"];
-            /** Format: double */
-            high_threshold?: number;
-            /** Format: double */
-            low_threshold?: number;
-        };
         LiveStreamer: {
             /** Format: int32 */
             id: number;
@@ -236,6 +319,8 @@ export interface components {
         MineStreamer: {
             config: components["schemas"]["ConfigType"];
         };
+        /** @enum {string} */
+        OddsComparisonType: "Le" | "Ge";
         Outcome: {
             id: string;
             title: string;
@@ -393,6 +478,145 @@ export interface operations {
             };
         };
     };
+    get_presets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Get all preset configurations */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: components["schemas"]["StreamerConfig"] | undefined;
+                    }[];
+                };
+            };
+        };
+    };
+    add_update_preset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddUpdatePreset"];
+            };
+        };
+        responses: {
+            /** @description Successfully created a preset configuration */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    remove_preset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Name of the preset to delete */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successfully removed the preset configuration */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_streamer_config: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Name of streamer whose config to update */
+                channel_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfigType"];
+            };
+        };
+        responses: {
+            /** @description Successfully updated streamer config */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Could not find streamer */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_watch_priority: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successfully removed the preset configuration */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string[];
+                };
+            };
+        };
+    };
+    update_watch_priority: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": string[];
+            };
+        };
+        responses: {
+            /** @description Successfully created a preset configuration */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     make_prediction: {
         parameters: {
             query?: never;
@@ -454,38 +678,6 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Prediction"] | null;
                 };
-            };
-        };
-    };
-    update_config: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Name of streamer whose config to update */
-                channel_name: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ConfigType"];
-            };
-        };
-        responses: {
-            /** @description Successfully updated streamer config */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Could not find streamer */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };

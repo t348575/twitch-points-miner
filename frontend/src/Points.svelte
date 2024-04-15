@@ -27,6 +27,14 @@
   import * as Card from "$lib/components/ui/card";
   import * as Table from "$lib/components/ui/table";
   import { Input } from "$lib/components/ui/input";
+  import ErrorAlert from "$lib/components/ui/ErrorAlert.svelte";
+  import {
+    get_app_state,
+    get_live_streamers,
+    get_timeline,
+    place_bet_streamer,
+    get_last_prediction,
+  } from "./common";
 
   const client = createClient<paths>({
     baseUrl: import.meta.env.DEV
@@ -54,72 +62,20 @@
   let live_streamers: StreamerPrediction[] = [];
   let prediction: (components["schemas"]["Event"] & boolean) | undefined;
   let pred_total_points = 0;
-  let prediction_made: components["schemas"]["Prediction"] | null = null;
+  let prediction_made: components["schemas"]["Prediction"] | null = undefined;
   let outcome: string | undefined;
-  let prediction_points = 0;
+  let prediction_points: undefined | number = undefined;
+  let error_message: undefined | string = undefined;
   $: make_prediction_class = `flex flex-col justify-center items-center ${live_streamers.length == 0 ? "opacity-25 pointer-events-none" : ""}`;
 
   $: {
     s_selected = streamers_name.map((a) =>
-      selected_streamers.find((b) => b.id == a.id) == undefined ? "" : "outline"
+      selected_streamers.find((b) => b.id == a.id) == undefined
+        ? ""
+        : "outline",
     );
     render_timeline();
   }
-
-  const get_streamers = async (): Promise<components["schemas"]["PubSub"]> => {
-    const { data, error } = await client.GET("/api");
-    if (error) {
-      throw error;
-    }
-    return data;
-  };
-
-  const get_timeline = async (
-    from: string,
-    to: string,
-    channels: Streamer[]
-  ): Promise<components["schemas"]["TimelineResult"][]> => {
-    const { data, error } = await client.POST("/api/analytics/timeline", {
-      body: {
-        channels: channels.map((a) => a.id),
-        from,
-        to,
-      },
-    });
-
-    if (error) {
-      throw error;
-    }
-    return data;
-  };
-
-  const get_live_streamers = async (): Promise<
-    components["schemas"]["LiveStreamer"][]
-  > => {
-    const { data, error } = await client.GET("/api/streamers/live");
-    if (error) {
-      throw error;
-    }
-    return data;
-  };
-
-  const get_last_prediction = async (
-    channel_id: number,
-    prediction_id: string
-  ): Promise<components["schemas"]["Prediction"] | null> => {
-    const { data, error } = await client.GET("/api/predictions/live", {
-      params: {
-        query: {
-          prediction_id,
-          channel_id,
-        },
-      },
-    });
-    if (error) {
-      throw error;
-    }
-    return data;
-  };
 
   interface PointData {
     idx: Date;
@@ -163,7 +119,7 @@
     start: new CalendarDate(
       prev.getFullYear(),
       prev.getMonth() + 1,
-      prev.getDate()
+      prev.getDate(),
     ),
     end: new CalendarDate(now.getFullYear(), now.getMonth() + 1, now.getDate()),
   });
@@ -195,7 +151,7 @@
   }
 
   onMount(async () => {
-    streamers = (await get_streamers())["streamers"];
+    streamers = (await get_app_state())["streamers"];
     for (const v in streamers) {
       streamers_name.push({
         name: streamers[v]?.info.channelName,
@@ -239,7 +195,7 @@
       currentDate?.start?.day,
       0,
       0,
-      0
+      0,
     );
     let to = new Date(
       currentDate?.end?.year,
@@ -247,13 +203,13 @@
       currentDate?.end?.day,
       23,
       59,
-      0
+      0,
     );
     timeline = (
       await get_timeline(
         from.toISOString(),
         to.toISOString(),
-        selected_streamers
+        selected_streamers,
       )
     ).map((a) => {
       idx++;
@@ -293,7 +249,7 @@
   }
 
   async function select_streamer_for_prediction(
-    v: Selected<number> | undefined
+    v: Selected<number> | undefined,
   ) {
     selected_streamer_for_prediction = v;
 
@@ -306,19 +262,19 @@
       const preds = Object.keys(l.streamer.state.predictions);
       if (preds.length == 0) {
         prediction = undefined;
-        prediction_made = null;
+        prediction_made = undefined;
         return;
       }
 
       prediction = l.streamer.state.predictions[preds[0]][0];
       pred_total_points = prediction?.outcomes.reduce(
         (n, { total_points }) => (n += total_points),
-        0
+        0,
       );
       if (l.streamer.state.predictions[preds[0]][1]) {
         prediction_made = await get_last_prediction(
           v.value,
-          l.streamer.state.predictions[preds[0]][0].id
+          l.streamer.state.predictions[preds[0]][0].id,
         );
       }
     }
@@ -337,24 +293,26 @@
     let outcome_id = outcome;
 
     let points = null;
-    if (prediction_points > 0) {
-      points = prediction_points;
+    if (prediction_points != undefined && prediction_points > 0) {
+      points = parseInt(prediction_points, 10);
     }
 
-    await client.POST("/api/predictions/bet/{streamer}", {
-      params: {
-        path: {
-          streamer: selected_streamer_for_prediction?.label,
-        },
-      },
-      body: {
+    try {
+      await place_bet_streamer(
+        live_streamers.find(
+          (a) => a.value == selected_streamer_for_prediction?.value,
+        )?.streamer.state.info.channelName,
         event_id,
         outcome_id,
         points,
-      },
-    });
+      );
+    } catch (err) {
+      error_message = err as string;
+      return;
+    }
 
-    prediction_points = 0;
+    error_message = undefined;
+    prediction_points = undefined;
   }
 </script>
 
@@ -390,7 +348,7 @@
                 variant="outline"
                 class={cn(
                   "w-[300px] justify-start text-left font-normal",
-                  !currentDate && "text-muted-foreground"
+                  !currentDate && "text-muted-foreground",
                 )}
                 builders={[builder]}
               >
@@ -398,7 +356,7 @@
                 {#if currentDate && currentDate.start}
                   {#if currentDate.end}
                     {df.format(currentDate.start.toDate(getLocalTimeZone()))} - {df.format(
-                      currentDate.end.toDate(getLocalTimeZone())
+                      currentDate.end.toDate(getLocalTimeZone()),
                     )}
                   {:else}
                     {df.format(currentDate.start.toDate(getLocalTimeZone()))}
@@ -423,7 +381,7 @@
         </div>
         <VisXYContainer data={timeline} class="mt-4">
           <VisTooltip />
-          <VisLine {x} {y} curveType="linear" lineWidth={3}/>
+          <VisLine {x} {y} curveType="linear" lineWidth={3} />
           <VisAxis
             type="x"
             label="Time"
@@ -438,7 +396,7 @@
       </div>
     </div>
   </div>
-  <div class="w-1/2 self-center">
+  <div class="w-1/2 self-center mb-4">
     <Card.Root>
       <Card.Header class="flex flex-row justify-center items-center">
         <p class="text-xl mr-2 inline">
@@ -475,7 +433,7 @@
           {#if prediction}
             <p class="text-xl">
               Points: {live_streamers.find(
-                (a) => a.value == selected_streamer_for_prediction
+                (a) => a.value == selected_streamer_for_prediction.value,
               )?.streamer.state.points}
             </p>
             <p class="text-xl">{prediction.title}</p>
@@ -501,7 +459,7 @@
                     <Table.Cell>{o.total_users}</Table.Cell>
                     <Table.Cell
                       >{(100.0 / (pred_total_points / o.total_points)).toFixed(
-                        2
+                        2,
                       )}</Table.Cell
                     >
                   </Table.Row>
@@ -513,21 +471,26 @@
           {/if}
         </div>
       </Card.Content>
-      {#if prediction && !prediction_made}
+      {#if prediction && prediction_made == undefined}
         <Card.Footer class="flex flex-col">
           {#if outcome}
             <p class="m-2">
-              Outcome: {prediction.outcomes.find((a) => a.id == outcome)?.title}
+              Selected outcome: {prediction.outcomes.find(
+                (a) => a.id == outcome,
+              )?.title}
             </p>
           {/if}
           <div class="flex flex-wrap justify-center">
+            {#if error_message}
+              <ErrorAlert message={error_message} />
+            {/if}
             <Input
               type="number"
               placeholder="points"
-              class="max-w-xs mr-2"
+              class="max-w-48 mr-2"
               bind:value={prediction_points}
               max={live_streamers.find(
-                (a) => a.value == selected_streamer_for_prediction
+                (a) => a.value == selected_streamer_for_prediction.value,
               )?.streamer.state.points}
               min={0}
             />
@@ -543,7 +506,7 @@
       {:else if prediction && prediction_made}
         <Card.Footer class="flex flex-col">
           Bet placed! Outcome: {prediction.outcomes.find(
-            (a) => a.id == prediction_made?.placed_bet.Some.outcome_id
+            (a) => a.id == prediction_made?.placed_bet.Some.outcome_id,
           )?.title}
           Points: {prediction_made?.placed_bet.Some.points}
         </Card.Footer>

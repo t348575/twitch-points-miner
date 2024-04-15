@@ -3,22 +3,19 @@ use std::{collections::HashMap, sync::Arc, time::Instant};
 use axum::{
     extract::{Path, State},
     response::IntoResponse,
-    routing::{delete, get, post, put},
+    routing::{delete, get, put},
     Extension, Json, Router,
 };
 use color_eyre::eyre::Context;
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::sync::RwLockWriteGuard;
 use twitch_api::{pubsub::predictions::Event, types::UserId};
 use utoipa::ToSchema;
 
 use crate::{
-    config::{Config, ConfigType},
-    make_paths,
-    pubsub::PubSub,
-    sub_error,
+    config::ConfigType,
+    make_paths, sub_error,
     twitch::{auth::Token, gql},
     types::*,
 };
@@ -30,7 +27,6 @@ pub fn build(state: ApiState, token: Arc<Token>) -> RouterBuild {
         .route("/live", get(live_streamers))
         .route("/mine/:streamer", put(mine_streamer))
         .route("/mine/:streamer/", delete(remove_streamer))
-        .route("/config/:streamer", post(update_config))
         .route("/:streamer", get(streamer))
         .layer(Extension(token))
         .with_state(state);
@@ -45,8 +41,7 @@ pub fn build(state: ApiState, token: Arc<Token>) -> RouterBuild {
         __path_streamer,
         __path_live_streamers,
         __path_mine_streamer,
-        __path_remove_streamer,
-        __path_update_config
+        __path_remove_streamer
     );
 
     (routes, schemas, paths)
@@ -56,19 +51,13 @@ pub fn build(state: ApiState, token: Arc<Token>) -> RouterBuild {
 pub enum StreamerError {
     #[error("Streamer is already being mined")]
     StreamerAlreadyMined,
-    #[error("Preset config does not exist")]
-    PresetConfigDoesNotExist,
-    #[error("Invalid config: {0}")]
-    InvalidConfig(String),
 }
 
 impl WebApiError for StreamerError {
     fn into_response(&self) -> axum::response::Response {
         use StreamerError::*;
         let status_code = match self {
-            PresetConfigDoesNotExist => StatusCode::BAD_REQUEST,
             StreamerAlreadyMined => StatusCode::CONFLICT,
-            InvalidConfig(_) => StatusCode::BAD_REQUEST,
         };
 
         (status_code, self.to_string()).into_response()
@@ -159,7 +148,7 @@ async fn mine_streamer(
         return sub_error!(StreamerError::StreamerAlreadyMined);
     }
 
-    let config = insert_config(&payload.config, &channel_name, &mut writer)?;
+    let config = writer.insert_config(&payload.config, &channel_name)?;
 
     let streamer = res[0].clone().unwrap();
     async fn rollback_steps(
@@ -265,76 +254,4 @@ async fn remove_streamer(
     writer.save_config("Remove streamer").await?;
     writer.restart_live_watcher();
     Ok(())
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/streamers/config/{channel_name}",
-    responses(
-        (status = 200, description = "Successfully updated streamer config"),
-        (status = 404, description = "Could not find streamer")
-    ),
-    params(
-        ("channel_name" = String, Path, description = "Name of streamer whose config to update")
-    ),
-    request_body = ConfigType
-)]
-async fn update_config(
-    State(data): State<ApiState>,
-    Path(channel_name): Path<String>,
-    Json(payload): Json<ConfigType>,
-) -> Result<(), ApiError> {
-    let mut writer = data.write().await;
-
-    let id = match writer.get_id_by_name(&channel_name) {
-        Some(s) => UserId::from(s.to_owned()),
-        None => return Err(ApiError::StreamerDoesNotExist),
-    };
-
-    let config = insert_config(&payload, &channel_name, &mut writer)?;
-    writer.streamers.get_mut(&id).unwrap().config = config;
-    *writer.config.streamers.get_mut(&channel_name).unwrap() = payload;
-
-    writer.save_config("Update streamer config").await?;
-    writer.restart_live_watcher();
-
-    Ok(())
-}
-
-fn insert_config(
-    config: &ConfigType,
-    channel_name: &str,
-    writer: &mut RwLockWriteGuard<'_, PubSub>,
-) -> Result<StreamerConfigRefWrapper, ApiError> {
-    match config {
-        ConfigType::Preset(name) => match writer.configs.get(name) {
-            Some(c) => Ok(c.clone()),
-            None => return sub_error!(StreamerError::PresetConfigDoesNotExist),
-        },
-        ConfigType::Specific(s) => {
-            let mut default = Config::default();
-            default
-                .streamers
-                .insert(channel_name.to_owned(), ConfigType::Specific(s.clone()));
-            if let Err(err) = default.parse_and_validate() {
-                return sub_error!(StreamerError::InvalidConfig(err.to_string()));
-            }
-
-            let s = StreamerConfigRefWrapper::new(StreamerConfigRef {
-                _type: ConfigTypeRef::Specific,
-                config: if let ConfigType::Specific(s) =
-                    default.streamers.shift_remove(channel_name).unwrap()
-                {
-                    s
-                } else {
-                    unreachable!()
-                },
-            });
-            writer
-                .configs
-                .entry(channel_name.to_owned())
-                .or_insert(s.clone());
-            Ok(s)
-        }
-    }
 }

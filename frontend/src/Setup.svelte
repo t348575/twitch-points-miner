@@ -1,5 +1,6 @@
 <script lang="ts">
   import * as Table from "$lib/components/ui/table";
+  import * as Select from "$lib/components/ui/select";
   import * as Menubar from "$lib/components/ui/menubar";
   import * as Dialog from "$lib/components/ui/dialog";
   import * as AlertDialog from "$lib/components/ui/alert-dialog";
@@ -24,9 +25,13 @@
     type FilterType,
     type Streamer,
     save_streamer_config,
+    get_presets,
+    add_or_update_preset,
+    delete_preset,
   } from "./common";
   import { ArrowUpDown, SlidersHorizontal, X } from "lucide-svelte";
   import Config from "./Config.svelte";
+  import type { components } from "./api";
 
   let data = writable<Streamer[]>([]);
 
@@ -71,8 +76,11 @@
     table.createViewModel(columns);
   const { selectedDataIds } = pluginStates.select;
 
+  let preset_name = "";
+  let preset_dialog = false;
   let config_dialog = false;
-  let remove_streamer_dialog = false;
+  let remove_dialog = false;
+  let remove_preset_mode = false;
   let channel_name = "";
   let add_streamer_alert = false;
   let error_message = "";
@@ -80,23 +88,54 @@
   let strategy = {
     value: "",
     label: "",
-    component: undefined,
   };
   let view_edit = false;
   let config_component: Config;
+  const BLANK_PRESET = { value: undefined, label: undefined, data: undefined };
+  let preset = BLANK_PRESET;
+  let preset_list: {
+    value: string;
+    label: string;
+    data: components["schemas"]["StreamerConfig"];
+  }[] = [];
+
+  $: if (!remove_dialog) {
+    remove_preset_mode = false;
+    preset = BLANK_PRESET;
+  }
 
   $: if (!config_dialog) {
     error_message = "";
     add_streamer_alert = false;
     channel_name = "";
     filters = [];
-    strategy = { label: "", value: "", component: undefined };
+    strategy = { label: "", value: "" };
+  }
+
+  $: if (!preset_dialog) {
+    filters = [];
+    strategy = { label: "", value: "" };
+    preset = BLANK_PRESET;
   }
 
   $: if (config_dialog && view_edit && config_component != undefined) {
     config_component.set_filters_strategy(
-      get(data)[selected_row_id].data.config
+      get(data)[selected_row_id].data.config,
     );
+  }
+
+  $: if (preset_dialog && view_edit && config_component != undefined) {
+    const item = preset_list.find((a) => a.value == preset.value);
+    if (item != undefined) {
+      let entry = JSON.parse(JSON.stringify(item));
+      config_component.set_filters_strategy({
+        _type: "Specific",
+        config: {
+          filters: entry.data.filters,
+          strategy: entry.data.strategy,
+        },
+      });
+    }
   }
 
   async function r_streamer() {
@@ -146,7 +185,7 @@
     try {
       await save_streamer_config(
         get(data)[selected_row_id].data.info.channelName,
-        config
+        config,
       );
     } catch (err) {
       toast(`Failed to remove streamer: ${err}`);
@@ -159,6 +198,72 @@
   function view_edit_config() {
     view_edit = true;
     config_dialog = true;
+  }
+
+  async function load_presets() {
+    preset_list = [];
+    const res = await get_presets();
+    for (const v in res) {
+      // @ts-ignore
+      preset_list.push({ value: v, label: v, data: res[v] });
+    }
+    preset_list = preset_list;
+  }
+
+  async function view_edit_preset() {
+    view_edit = true;
+    preset_dialog = true;
+
+    await load_presets();
+  }
+
+  function add_preset_button() {
+    view_edit = false;
+    preset_dialog = true;
+    strategy = {
+      value: "Specific",
+      label: "Specific",
+    };
+  }
+
+  async function save_preset() {
+    let config = config_component.get_config();
+    if (config === undefined) {
+      return;
+    }
+
+    let name;
+    if (view_edit) {
+      name = preset.value;
+    } else {
+      name = preset_name;
+    }
+    try {
+      await add_or_update_preset(name, config.Specific);
+    } catch (err) {
+      toast(`Failed to save preset: ${err}`);
+      return;
+    }
+    preset_dialog = false;
+    data.set(await get_streamers());
+  }
+
+  async function remove_preset() {
+    remove_dialog = true;
+    remove_preset_mode = true;
+
+    await load_presets();
+  }
+
+  async function remove_preset_button() {
+    try {
+      await delete_preset(preset.value);
+      preset_dialog = false;
+    } catch (err) {
+      toast(`Failed to remove preset: ${err}`);
+      return;
+    }
+    data.set(await get_streamers());
   }
 </script>
 
@@ -176,8 +281,7 @@
           >
           <Menubar.Item
             disabled={selected_row_id.length == 0}
-            on:click={() => (remove_streamer_dialog = true)}
-            >Remove</Menubar.Item
+            on:click={() => (remove_dialog = true)}>Remove</Menubar.Item
           >
         </Menubar.Content>
       </Menubar.Menu>
@@ -188,6 +292,14 @@
             disabled={selected_row_id.length == 0}
             on:click={view_edit_config}>View / Edit</Menubar.Item
           >
+        </Menubar.Content>
+      </Menubar.Menu>
+      <Menubar.Menu>
+        <Menubar.Trigger>Presets</Menubar.Trigger>
+        <Menubar.Content>
+          <Menubar.Item on:click={add_preset_button}>Add</Menubar.Item>
+          <Menubar.Item on:click={remove_preset}>Remove</Menubar.Item>
+          <Menubar.Item on:click={view_edit_preset}>View / Edit</Menubar.Item>
         </Menubar.Content>
       </Menubar.Menu>
     </Menubar.Root>
@@ -285,21 +397,97 @@
     </Dialog.Content>
   </Dialog.Root>
 
-  <AlertDialog.Root bind:open={remove_streamer_dialog}>
+  <Dialog.Root bind:open={preset_dialog}>
+    <Dialog.Content>
+      <Dialog.Header>
+        <Dialog.Title class="mb-4">Preset config</Dialog.Title>
+      </Dialog.Header>
+      <div class="flex flex-col items-center">
+        {#if view_edit}
+          <Select.Root bind:selected={preset}>
+            <Select.Trigger class="my-2">
+              <Select.Value placeholder="Preset" />
+            </Select.Trigger>
+            <Select.Content>
+              {#each preset_list as p}
+                <Select.Item value={p.value}>{p.label}</Select.Item>
+              {/each}
+            </Select.Content>
+          </Select.Root>
+          {#if preset.value != undefined}
+            <Config
+              bind:filters
+              bind:strategy
+              bind:this={config_component}
+              preset_mode={true}
+            />
+          {/if}
+        {:else}
+          {#if add_streamer_alert}
+            <ErrorAlert message={error_message} />
+          {/if}
+          <Input
+            type="text"
+            bind:value={preset_name}
+            placeholder="Preset name"
+          />
+          <Config
+            bind:filters
+            bind:strategy
+            bind:this={config_component}
+            preset_mode={true}
+          />
+        {/if}
+        <Button class="mt-4 max-w-24" on:click={save_preset}>
+          Save preset
+        </Button>
+      </div>
+    </Dialog.Content>
+  </Dialog.Root>
+
+  <AlertDialog.Root bind:open={remove_dialog}>
     <AlertDialog.Content>
       <AlertDialog.Header>
-        <AlertDialog.Title>Remove streamer</AlertDialog.Title>
+        <AlertDialog.Title>
+          Remove {#if remove_preset_mode}
+            preset
+          {:else}
+            streamer
+          {/if}
+        </AlertDialog.Title>
         <AlertDialog.Description>
-          Are you sure you want to remove {get(data)[selected_row_id].data.info
-            .channelName}?
-          <br />
-          <p class="font-bold inline">Note:</p>
-           Analytics will not be deleted.
+          {#if remove_preset_mode}
+            <Select.Root bind:selected={preset}>
+              <Select.Trigger class="my-2">
+                <Select.Value placeholder="Preset" />
+              </Select.Trigger>
+              <Select.Content>
+                {#each preset_list as p}
+                  <Select.Item value={p.value}>{p.label}</Select.Item>
+                {/each}
+              </Select.Content>
+            </Select.Root>
+            {#if preset.value != undefined}
+              <p class="mx-1">
+                Are you sure you want to remove {preset.value}?
+              </p>
+            {/if}
+          {:else}
+            Are you sure you want to remove {get(data)[selected_row_id].data
+              .info.channelName}?
+            <br />
+            <p class="font-bold inline">Note:</p>
+            Analytics will not be deleted.
+          {/if}
         </AlertDialog.Description>
       </AlertDialog.Header>
       <AlertDialog.Footer>
         <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
-        <AlertDialog.Action on:click={r_streamer}>Remove</AlertDialog.Action>
+        <AlertDialog.Action
+          on:click={remove_preset_mode ? remove_preset_button : r_streamer}
+          disabled={remove_preset_mode && preset.value == undefined}
+          >Remove</AlertDialog.Action
+        >
       </AlertDialog.Footer>
     </AlertDialog.Content>
   </AlertDialog.Root>

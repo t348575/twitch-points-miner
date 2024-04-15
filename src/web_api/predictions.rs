@@ -188,7 +188,7 @@ async fn place_bet(
             .parse::<i32>()
             .map_err(|err| err.into())
             .map_err(ApiError::internal_error)?;
-        let points = gql::get_channel_points(&[analytics.2], &token.access_token)
+        let channel_points = gql::get_channel_points(&[analytics.2], &token.access_token)
             .await
             .map_err(ApiError::twitch_api_error)?;
         analytics
@@ -197,9 +197,10 @@ async fn place_bet(
                 let entry_id = analytics.last_prediction_id(channel_id, &event_id)?;
                 analytics.insert_points(
                     channel_id,
-                    points[0].0 as i32,
-                    PointsInfo::Prediction(event_id, entry_id),
-                )
+                    channel_points[0].0 as i32,
+                    PointsInfo::Prediction(event_id.clone(), entry_id),
+                )?;
+                analytics.place_bet(&event_id, channel_id, &outcome_id, points)
             })
             .await?;
     }

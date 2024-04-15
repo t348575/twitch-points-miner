@@ -8,10 +8,16 @@ use http::StatusCode;
 use indexmap::IndexMap;
 use serde::Deserialize;
 use thiserror::Error;
+use twitch_api::types::UserId;
 use utoipa::ToSchema;
 use validator::Validate;
 
-use crate::{config::StreamerConfig, make_paths, sub_error};
+use crate::{
+    config::{Config, ConfigType, StreamerConfig},
+    make_paths,
+    pubsub::PubSub,
+    sub_error,
+};
 
 use super::{
     ApiError, ApiState, ConfigTypeRef, RouterBuild, StreamerConfigRef, StreamerConfigRefWrapper,
@@ -23,18 +29,20 @@ pub fn build(state: ApiState) -> RouterBuild {
         .route("/presets", get(get_presets))
         .route("/presets/", post(add_update_preset))
         .route("/presets/:name", delete(remove_preset))
+        .route("/streamer/:name", post(update_streamer_config))
         .route("/watch_priority", get(get_watch_priority))
         .route("/watch_priority/", post(update_watch_priority))
         .with_state(state);
 
-    let schemas = vec![];
+    let schemas = vec![AddUpdatePreset::schema()];
 
     let paths = make_paths!(
         __path_get_presets,
         __path_add_update_preset,
         __path_remove_preset,
         __path_get_watch_priority,
-        __path_update_watch_priority
+        __path_update_watch_priority,
+        __path_update_streamer_config
     );
 
     (routes, schemas, paths)
@@ -75,7 +83,23 @@ impl WebApiError for ConfigError {
     )
 )]
 async fn get_presets(State(data): State<ApiState>) -> Json<IndexMap<String, StreamerConfig>> {
-    Json(data.read().await.config.presets.clone().unwrap_or_default())
+    let reader = data.read().await;
+    let mut presets = IndexMap::new();
+    for item in reader.config.presets.clone().unwrap_or_default().keys() {
+        presets.insert(
+            item.clone(),
+            reader
+                .configs
+                .get(item)
+                .unwrap()
+                .0
+                .read()
+                .unwrap()
+                .config
+                .clone(),
+        );
+    }
+    Json(presets)
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -131,7 +155,7 @@ async fn add_update_preset(
 }
 
 #[utoipa::path(
-    post,
+    delete,
     path = "/api/config/presets/{name}",
     responses(
         (status = 200, description = "Successfully removed the preset configuration"),
@@ -159,6 +183,7 @@ async fn remove_preset(
     }
 
     writer.configs.remove(&name);
+    writer.config.presets.as_mut().unwrap().shift_remove(&name);
     writer.save_config("Remove preset").await?;
     Ok(())
 }
@@ -204,4 +229,79 @@ async fn update_watch_priority(
     writer.config.watch_priority = Some(priority);
     writer.save_config("Update watch priority").await?;
     Ok(())
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/config/streamer/{channel_name}",
+    responses(
+        (status = 200, description = "Successfully updated streamer config"),
+        (status = 404, description = "Could not find streamer")
+    ),
+    params(
+        ("channel_name" = String, Path, description = "Name of streamer whose config to update")
+    ),
+    request_body = ConfigType
+)]
+async fn update_streamer_config(
+    State(data): State<ApiState>,
+    Path(channel_name): Path<String>,
+    Json(payload): Json<ConfigType>,
+) -> Result<(), ApiError> {
+    let mut writer = data.write().await;
+
+    let id = match writer.get_id_by_name(&channel_name) {
+        Some(s) => UserId::from(s.to_owned()),
+        None => return Err(ApiError::StreamerDoesNotExist),
+    };
+
+    let config = writer.insert_config(&payload, &channel_name)?;
+    writer.streamers.get_mut(&id).unwrap().config = config;
+    *writer.config.streamers.get_mut(&channel_name).unwrap() = payload;
+
+    writer.save_config("Update streamer config").await?;
+    writer.restart_live_watcher();
+
+    Ok(())
+}
+
+impl PubSub {
+    #[cfg(feature = "web_api")]
+    #[allow(private_interfaces)]
+    pub fn insert_config(
+        &mut self,
+        config: &ConfigType,
+        channel_name: &str,
+    ) -> Result<StreamerConfigRefWrapper, ApiError> {
+        match config {
+            ConfigType::Preset(name) => match self.configs.get(name) {
+                Some(c) => Ok(c.clone()),
+                None => return sub_error!(ConfigError::PresetConfigDoesNotExist),
+            },
+            ConfigType::Specific(s) => {
+                let mut default = Config::default();
+                default
+                    .streamers
+                    .insert(channel_name.to_owned(), ConfigType::Specific(s.clone()));
+                if let Err(err) = default.parse_and_validate() {
+                    return sub_error!(ConfigError::InvalidConfig(err.to_string()));
+                }
+
+                let s = StreamerConfigRefWrapper::new(StreamerConfigRef {
+                    _type: ConfigTypeRef::Specific,
+                    config: if let ConfigType::Specific(s) =
+                        default.streamers.shift_remove(channel_name).unwrap()
+                    {
+                        s
+                    } else {
+                        unreachable!()
+                    },
+                });
+                self.configs
+                    .entry(channel_name.to_owned())
+                    .or_insert(s.clone());
+                Ok(s)
+            }
+        }
+    }
 }

@@ -21,53 +21,6 @@ export interface FilterType {
   quantity: number;
 }
 
-export function default_validate_strategy(obj: any): string | undefined {
-  for (const v of Object.keys(obj)) {
-    // points object
-    if (typeof obj[v] == "object") {
-      if (
-        obj[v].percent == undefined ||
-        obj[v].percent < 0.0 ||
-        obj[v].percent > 100.0
-      ) {
-        return "Invalid points percentage";
-      }
-
-      if (obj[v].max_value == undefined) {
-        return "Invalid max points value";
-      }
-    }
-    if (obj[v] == undefined || obj[v] < 0.0 || obj[v] > 100.0) {
-      return `Invalid ${v.split("_").join(" ")}`;
-    }
-  }
-}
-
-function default_strategy_apply_function(
-  obj: any,
-  func: { (item: any): any }
-): any {
-  let obj_copy = JSON.parse(JSON.stringify(obj));
-  for (const v of Object.keys(obj)) {
-    // points object
-    if (typeof obj[v] == "object") {
-      obj_copy[v].percent = func(obj[v].percent * 100.0);
-      obj_copy[v].max_value = func(obj[v].max_value);
-    } else {
-      obj_copy[v] = func(obj[v] * 100.0);
-    }
-  }
-  return obj_copy;
-}
-
-export function default_parse_strategy(obj: any): any {
-  return default_strategy_apply_function(obj, parseFloat);
-}
-
-export function default_stringify_strategy(obj: any): any {
-  return default_strategy_apply_function(obj, (x) => x.toString());
-}
-
 export async function get_streamers(): Promise<Streamer[]> {
   const { data, error } = await client.GET("/api");
   if (error) {
@@ -87,7 +40,7 @@ export async function get_streamers(): Promise<Streamer[]> {
 
 export async function mine_streamer(
   channel_name: string,
-  config: components["schemas"]["ConfigType"]
+  config: components["schemas"]["ConfigType"],
 ) {
   const { error } = await client.PUT("/api/streamers/mine/{channel_name}", {
     params: {
@@ -123,9 +76,9 @@ export async function remove_streamer(channelName: string) {
 
 export async function save_streamer_config(
   channelName: string,
-  config: components["schemas"]["ConfigType"]
+  config: components["schemas"]["ConfigType"],
 ) {
-  const { error } = await client.POST("/api/streamers/config/{channel_name}", {
+  const { error } = await client.POST("/api/config/streamer/{channel_name}", {
     params: {
       path: {
         channel_name: channelName,
@@ -133,4 +86,127 @@ export async function save_streamer_config(
     },
     body: config,
   });
+  if (error) {
+    throw error;
+  }
+}
+
+export async function place_bet_streamer(
+  streamer: string,
+  event_id: string,
+  outcome_id: string,
+  points: number | null,
+) {
+  const { error } = await client.POST("/api/predictions/bet/{streamer}", {
+    params: {
+      path: {
+        streamer,
+      },
+    },
+    body: {
+      event_id,
+      outcome_id,
+      points,
+    },
+  });
+
+  if (error) {
+    throw error;
+  }
+}
+
+export async function get_presets(): Promise<{
+  [key: string]: components["schemas"]["StreamerConfig"];
+}> {
+  const { data, error } = await client.GET("/api/config/presets");
+  if (error) {
+    throw error;
+  }
+  // @ts-ignore
+  return data;
+}
+
+export async function add_or_update_preset(
+  name: string,
+  config: components["schemas"]["StreamerConfig"],
+) {
+  const { error } = await client.POST("/api/config/presets/", {
+    body: {
+      config,
+      name,
+    },
+  });
+  if (error) {
+    throw error;
+  }
+}
+
+export async function delete_preset(name: string) {
+  const { error } = await client.DELETE("/api/config/presets/{name}", {
+    params: {
+      path: {
+        name,
+      },
+    },
+  });
+  if (error) {
+    throw error;
+  }
+}
+
+export async function get_app_state(): Promise<
+  components["schemas"]["PubSub"]
+> {
+  const { data, error } = await client.GET("/api");
+  if (error) {
+    throw error;
+  }
+  return data;
+}
+
+export async function get_timeline(
+  from: string,
+  to: string,
+  channels: Streamer[],
+): Promise<components["schemas"]["TimelineResult"][]> {
+  const { data, error } = await client.POST("/api/analytics/timeline", {
+    body: {
+      channels: channels.map((a) => a.id),
+      from,
+      to,
+    },
+  });
+
+  if (error) {
+    throw error;
+  }
+  return data;
+}
+
+export async function get_live_streamers(): Promise<
+  components["schemas"]["LiveStreamer"][]
+> {
+  const { data, error } = await client.GET("/api/streamers/live");
+  if (error) {
+    throw error;
+  }
+  return data;
+}
+
+export async function get_last_prediction(
+  channel_id: number,
+  prediction_id: string,
+): Promise<components["schemas"]["Prediction"] | null> {
+  const { data, error } = await client.GET("/api/predictions/live", {
+    params: {
+      query: {
+        prediction_id,
+        channel_id,
+      },
+    },
+  });
+  if (error) {
+    throw error;
+  }
+  return data;
 }

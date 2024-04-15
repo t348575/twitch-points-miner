@@ -155,7 +155,7 @@ impl PubSub {
                         info,
                         predictions: ap
                             .into_iter()
-                            .map(|x| (x.0.channel_id.clone(), x))
+                            .map(|x| (x.0.id.to_string(), x))
                             .collect::<HashMap<_, _>>(),
                         points: p,
                         last_points_refresh: Instant::now(),
