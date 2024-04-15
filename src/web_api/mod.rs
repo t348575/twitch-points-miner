@@ -4,6 +4,7 @@ use axum::{
     extract::State, http::StatusCode, response::IntoResponse, routing::get, serve::Serve, Json,
     Router,
 };
+use color_eyre::eyre::{Context, Report};
 use tokio::sync::RwLock;
 use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 use twitch_api::{
@@ -25,6 +26,7 @@ use crate::{
 
 #[cfg(feature = "analytics")]
 mod analytics;
+mod config;
 mod predictions;
 mod streamer;
 
@@ -52,6 +54,13 @@ macro_rules! make_paths {
     };
 }
 
+#[macro_export]
+macro_rules! sub_error {
+    ($rule:expr) => {
+        Err(ApiError::SubError(Box::new($rule)))
+    };
+}
+
 pub async fn get_api_server(
     address: String,
     pubsub: ApiState,
@@ -65,7 +74,7 @@ pub async fn get_api_server(
         components(
             schemas(
                 PubSub, StreamerState, StreamerConfigRefWrapper, ConfigTypeRef, StreamerConfig, StreamerInfo, Event,
-                Filter, Strategy, UserId, Game, Detailed, Timestamp, DefaultPrediction, HighOdds, Points
+                Filter, Strategy, UserId, Game, Detailed, Timestamp, DefaultPrediction, DetailedOdds, Points, OddsComparisonType
             ),
         ),
         tags(
@@ -88,6 +97,10 @@ pub async fn get_api_server(
     schemas.extend(predictions.1);
     paths.extend(predictions.2);
 
+    let config = config::build(pubsub.clone());
+    schemas.extend(config.1);
+    paths.extend(config.2);
+
     #[cfg(feature = "analytics")]
     let analytics = {
         let analytics = analytics::build(pubsub.clone(), token.clone());
@@ -107,6 +120,7 @@ pub async fn get_api_server(
     let mut api = Router::new()
         .nest("/streamers", streamer.0)
         .nest("/predictions", predictions.0)
+        .nest("/config", config.0)
         .route("/", get(app_state).with_state(pubsub.clone()));
 
     #[cfg(feature = "analytics")]
@@ -148,14 +162,14 @@ enum ApiError {
     AnalyticsError(crate::analytics::AnalyticsError),
     #[error("Error sending request to the twitch API {0}")]
     TwitchAPIError(String),
-    #[allow(dead_code)]
-    #[error("StreamerError")]
-    StreamerError(streamer::StreamerError),
-    #[allow(dead_code)]
-    #[error("PredictionError")]
-    PredictionError(predictions::PredictionError),
+    #[error("SubError")]
+    SubError(Box<dyn WebApiError>),
     #[error("Internal server error {0}")]
     InternalError(String),
+}
+
+trait WebApiError: std::fmt::Debug + Send {
+    fn into_response(&self) -> axum::response::Response;
 }
 
 impl From<chrono::ParseError> for ApiError {
@@ -171,6 +185,16 @@ impl From<crate::analytics::AnalyticsError> for ApiError {
     }
 }
 
+impl ApiError {
+    fn twitch_api_error(err: Report) -> ApiError {
+        ApiError::TwitchAPIError(err.to_string())
+    }
+
+    fn internal_error(err: Report) -> ApiError {
+        ApiError::InternalError(err.to_string())
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
         let status_code = match self {
@@ -180,10 +204,24 @@ impl IntoResponse for ApiError {
             ApiError::InternalError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             #[cfg(feature = "analytics")]
             ApiError::AnalyticsError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            ApiError::StreamerError(s) => return s.into_response(),
-            ApiError::PredictionError(s) => return s.into_response(),
+            ApiError::SubError(s) => return s.into_response(),
         };
 
         (status_code, self.to_string()).into_response()
+    }
+}
+
+impl PubSub {
+    async fn save_config(&mut self, context: &str) -> Result<(), ApiError> {
+        tokio::fs::write(
+            &self.config_path,
+            serde_yaml::to_string(&self.config)
+                .context(format!("Serializing config {context}"))
+                .map_err(ApiError::internal_error)?,
+        )
+        .await
+        .context(format!("Writing config file {context}"))
+        .map_err(ApiError::internal_error)?;
+        Ok(())
     }
 }

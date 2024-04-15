@@ -6,11 +6,11 @@ use axum::{
     routing::{delete, get, post, put},
     Extension, Json, Router,
 };
-use color_eyre::eyre::{Context, Report};
+use color_eyre::eyre::Context;
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::{fs, sync::RwLockWriteGuard};
+use tokio::sync::RwLockWriteGuard;
 use twitch_api::{pubsub::predictions::Event, types::UserId};
 use utoipa::ToSchema;
 
@@ -18,11 +18,12 @@ use crate::{
     config::{Config, ConfigType},
     make_paths,
     pubsub::PubSub,
+    sub_error,
     twitch::{auth::Token, gql},
     types::*,
 };
 
-use super::{ApiError, ApiState, RouterBuild};
+use super::{ApiError, ApiState, RouterBuild, WebApiError};
 
 pub fn build(state: ApiState, token: Arc<Token>) -> RouterBuild {
     let routes = Router::new()
@@ -59,24 +60,15 @@ pub enum StreamerError {
     PresetConfigDoesNotExist,
     #[error("Invalid config: {0}")]
     InvalidConfig(String),
-    #[error("Common error")]
-    ApiError(Arc<ApiError>),
 }
 
-impl StreamerError {
-    fn twitch_api_error(err: Report) -> Self {
-        StreamerError::ApiError(Arc::new(ApiError::TwitchAPIError(err.to_string())))
-    }
-}
-
-impl IntoResponse for StreamerError {
-    fn into_response(self) -> axum::response::Response {
+impl WebApiError for StreamerError {
+    fn into_response(&self) -> axum::response::Response {
         use StreamerError::*;
         let status_code = match self {
             PresetConfigDoesNotExist => StatusCode::BAD_REQUEST,
             StreamerAlreadyMined => StatusCode::CONFLICT,
             InvalidConfig(_) => StatusCode::BAD_REQUEST,
-            ApiError(err) => return Arc::try_unwrap(err).unwrap().into_response(),
         };
 
         (status_code, self.to_string()).into_response()
@@ -145,19 +137,18 @@ struct MineStreamer {
     ),
     request_body = MineStreamer
 )]
+#[axum::debug_handler]
 async fn mine_streamer(
     State(data): State<ApiState>,
     Path(channel_name): Path<String>,
     Extension(token): Extension<Arc<Token>>,
     Json(payload): Json<MineStreamer>,
-) -> Result<(), StreamerError> {
+) -> Result<(), ApiError> {
     let res = gql::streamer_metadata(&[&channel_name], &token.access_token)
         .await
-        .map_err(StreamerError::twitch_api_error)?;
+        .map_err(ApiError::twitch_api_error)?;
     if res.len() == 0 || (res.len() > 0 && res[0].is_none()) {
-        return Err(StreamerError::ApiError(Arc::new(
-            ApiError::StreamerDoesNotExist,
-        )));
+        return Err(ApiError::StreamerDoesNotExist);
     }
 
     let mut writer = data.write().await;
@@ -165,7 +156,7 @@ async fn mine_streamer(
         .streamers
         .contains_key(&UserId::from(channel_name.clone()))
     {
-        return Err(StreamerError::StreamerAlreadyMined);
+        return sub_error!(StreamerError::StreamerAlreadyMined);
     }
 
     let config = insert_config(&payload.config, &channel_name, &mut writer)?;
@@ -174,14 +165,14 @@ async fn mine_streamer(
     async fn rollback_steps(
         channel_name: &str,
         access_token: &str,
-    ) -> Result<(u32, Vec<(Event, bool)>), StreamerError> {
+    ) -> Result<(u32, Vec<(Event, bool)>), ApiError> {
         let points = gql::get_channel_points(&[channel_name], access_token)
             .await
-            .map_err(StreamerError::twitch_api_error)?[0]
+            .map_err(ApiError::twitch_api_error)?[0]
             .0;
         let active_predictions = gql::channel_points_context(&[channel_name], &access_token)
             .await
-            .map_err(StreamerError::twitch_api_error)?[0]
+            .map_err(ApiError::twitch_api_error)?[0]
             .clone();
         Ok((points, active_predictions))
     }
@@ -213,17 +204,8 @@ async fn mine_streamer(
         },
     );
 
+    writer.save_config("Mine streamer").await?;
     writer.restart_live_watcher();
-
-    fs::write(
-        &writer.config_path,
-        serde_yaml::to_string(&writer.config)
-            .context("Serializing new config")
-            .map_err(handle_err)?,
-    )
-    .await
-    .context("Writing new config file")
-    .map_err(handle_err)?;
 
     #[cfg(feature = "analytics")]
     {
@@ -232,12 +214,11 @@ async fn mine_streamer(
             .as_str()
             .parse()
             .context("Parse streamer id")
-            .map_err(handle_err)?;
+            .map_err(ApiError::internal_error)?;
         let inserted = writer
             .analytics
             .execute(|analytics| analytics.insert_streamer(id, streamer.1.channel_name))
-            .await
-            .map_err(|err| StreamerError::ApiError(Arc::new(ApiError::AnalyticsError(err))))?;
+            .await?;
         if inserted {
             writer
                 .analytics
@@ -248,8 +229,7 @@ async fn mine_streamer(
                         crate::analytics::model::PointsInfo::FirstEntry,
                     )
                 })
-                .await
-                .map_err(|err| StreamerError::ApiError(Arc::new(ApiError::AnalyticsError(err))))?;
+                .await?;
         }
     }
 
@@ -270,32 +250,19 @@ async fn mine_streamer(
 async fn remove_streamer(
     State(data): State<ApiState>,
     Path(channel_name): Path<String>,
-) -> Result<(), StreamerError> {
+) -> Result<(), ApiError> {
     let mut writer = data.write().await;
 
     let id = match writer.get_id_by_name(&channel_name) {
         Some(s) => UserId::from(s.to_owned()),
-        None => {
-            return Err(StreamerError::ApiError(Arc::new(
-                ApiError::StreamerDoesNotExist,
-            )))
-        }
+        None => return Err(ApiError::StreamerDoesNotExist),
     };
 
     writer.streamers.remove(&id);
-    writer.config.streamers.remove(&channel_name);
+    writer.config.streamers.shift_remove(&channel_name);
     writer.configs.remove(&channel_name);
 
-    fs::write(
-        &writer.config_path,
-        serde_yaml::to_string(&writer.config)
-            .context("Serializing new config")
-            .map_err(handle_err)?,
-    )
-    .await
-    .context("Writing new config file")
-    .map_err(handle_err)?;
-
+    writer.save_config("Remove streamer").await?;
     writer.restart_live_watcher();
     Ok(())
 }
@@ -316,31 +283,19 @@ async fn update_config(
     State(data): State<ApiState>,
     Path(channel_name): Path<String>,
     Json(payload): Json<ConfigType>,
-) -> Result<(), StreamerError> {
+) -> Result<(), ApiError> {
     let mut writer = data.write().await;
 
     let id = match writer.get_id_by_name(&channel_name) {
         Some(s) => UserId::from(s.to_owned()),
-        None => {
-            return Err(StreamerError::ApiError(Arc::new(
-                ApiError::StreamerDoesNotExist,
-            )))
-        }
+        None => return Err(ApiError::StreamerDoesNotExist),
     };
 
     let config = insert_config(&payload, &channel_name, &mut writer)?;
     writer.streamers.get_mut(&id).unwrap().config = config;
     *writer.config.streamers.get_mut(&channel_name).unwrap() = payload;
 
-    fs::write(
-        &writer.config_path,
-        serde_yaml::to_string(&writer.config)
-            .context("Serializing new config")
-            .map_err(handle_err)?,
-    )
-    .await
-    .context("Writing new config file")
-    .map_err(handle_err)?;
+    writer.save_config("Update streamer config").await?;
     writer.restart_live_watcher();
 
     Ok(())
@@ -350,11 +305,11 @@ fn insert_config(
     config: &ConfigType,
     channel_name: &str,
     writer: &mut RwLockWriteGuard<'_, PubSub>,
-) -> Result<StreamerConfigRefWrapper, StreamerError> {
+) -> Result<StreamerConfigRefWrapper, ApiError> {
     match config {
         ConfigType::Preset(name) => match writer.configs.get(name) {
             Some(c) => Ok(c.clone()),
-            None => return Err(StreamerError::PresetConfigDoesNotExist),
+            None => return sub_error!(StreamerError::PresetConfigDoesNotExist),
         },
         ConfigType::Specific(s) => {
             let mut default = Config::default();
@@ -362,13 +317,13 @@ fn insert_config(
                 .streamers
                 .insert(channel_name.to_owned(), ConfigType::Specific(s.clone()));
             if let Err(err) = default.parse_and_validate() {
-                return Err(StreamerError::InvalidConfig(err.to_string()));
+                return sub_error!(StreamerError::InvalidConfig(err.to_string()));
             }
 
             let s = StreamerConfigRefWrapper::new(StreamerConfigRef {
                 _type: ConfigTypeRef::Specific,
                 config: if let ConfigType::Specific(s) =
-                    default.streamers.remove(channel_name).unwrap()
+                    default.streamers.shift_remove(channel_name).unwrap()
                 {
                     s
                 } else {
@@ -382,8 +337,4 @@ fn insert_config(
             Ok(s)
         }
     }
-}
-
-fn handle_err(err: Report) -> StreamerError {
-    StreamerError::ApiError(Arc::new(ApiError::InternalError(err.to_string())))
 }

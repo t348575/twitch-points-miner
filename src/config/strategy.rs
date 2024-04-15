@@ -15,7 +15,7 @@ pub enum Strategy {
 #[validate(nested)]
 pub struct Detailed {
     #[validate(nested)]
-    pub high_odds: Option<Vec<HighOdds>>,
+    pub detailed: Option<Vec<DetailedOdds>>,
     #[validate(nested)]
     pub default: DefaultPrediction,
 }
@@ -34,24 +34,25 @@ pub struct DefaultPrediction {
     pub points: Points,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
+pub enum OddsComparisonType {
+    #[default]
+    Le,
+    Ge,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 #[validate(nested)]
-pub struct HighOdds {
+pub struct DetailedOdds {
+    pub _type: OddsComparisonType,
     #[validate(range(min = 0.0, max = 100.0))]
-    #[serde(default = "defaults::_detailed_low_threshold_default")]
-    pub low_threshold: f64,
-
+    pub threshold: f64,
     #[validate(range(min = 0.0, max = 100.0))]
-    #[serde(default = "defaults::_detailed_high_threshold_default")]
-    pub high_threshold: f64,
-
-    #[validate(range(min = 0.0, max = 100.0))]
-    #[serde(default = "defaults::_detailed_high_odds_attempt_rate_default")]
-    pub high_odds_attempt_rate: f64,
-
+    pub attempt_rate: f64,
     #[validate(nested)]
-    pub high_odds_points: Points,
+    pub points: Points,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
@@ -67,7 +68,6 @@ pub struct Points {
 mod defaults {
     pub const fn _detailed_low_threshold_default() -> f64 { 40.0 }
     pub const fn _detailed_high_threshold_default() -> f64 { 60.0 }
-    pub const fn _detailed_high_odds_attempt_rate_default() -> f64 { 50.0 }
 }
 
 impl<'v_a, 'a> ::validator::ValidateNested<'v_a> for Strategy {
@@ -110,12 +110,11 @@ impl Normalize for Detailed {
     fn normalize(&mut self) {
         self.default.normalize();
 
-        if let Some(h) = self.high_odds.as_mut() {
+        if let Some(h) = self.detailed.as_mut() {
             h.iter_mut().for_each(|x| {
-                x.low_threshold /= 100.0;
-                x.high_threshold /= 100.0;
-                x.high_odds_attempt_rate /= 100.0;
-                x.high_odds_points.normalize();
+                x.threshold /= 100.0;
+                x.attempt_rate /= 100.0;
+                x.points.normalize();
             });
         }
     }

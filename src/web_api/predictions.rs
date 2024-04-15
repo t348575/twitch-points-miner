@@ -6,7 +6,6 @@ use axum::{
     routing::{get, post},
     Extension, Json, Router,
 };
-use color_eyre::eyre::Report;
 use http::StatusCode;
 use serde::Deserialize;
 use thiserror::Error;
@@ -15,9 +14,14 @@ use utoipa::ToSchema;
 
 #[cfg(feature = "analytics")]
 use crate::analytics::{model::*, TimelineResult};
-use crate::{make_paths, pubsub::prediction_logic, twitch::auth::Token, twitch::gql};
+use crate::{
+    make_paths,
+    pubsub::prediction_logic,
+    sub_error,
+    twitch::{auth::Token, gql},
+};
 
-use super::{ApiError, ApiState, RouterBuild};
+use super::{ApiError, ApiState, RouterBuild, WebApiError};
 
 pub fn build(state: ApiState, token: Arc<Token>) -> RouterBuild {
     let routes = Router::new()
@@ -51,31 +55,20 @@ pub fn build(state: ApiState, token: Arc<Token>) -> RouterBuild {
 
 #[derive(Debug, Error)]
 pub enum PredictionError {
-    #[error("Streamer does not exist")]
-    StreamerDoesNotExist,
     #[error("Prediction does not exist")]
     PredictionNotFound,
     #[error("Outcome does not exist")]
     OutcomeNotFound,
-    #[error("Common error")]
-    ApiError(Arc<ApiError>),
 }
 
-impl IntoResponse for PredictionError {
-    fn into_response(self) -> axum::response::Response {
+impl WebApiError for PredictionError {
+    fn into_response(&self) -> axum::response::Response {
         use PredictionError::*;
         let status_code = match self {
-            OutcomeNotFound | PredictionNotFound | StreamerDoesNotExist => StatusCode::BAD_REQUEST,
-            ApiError(err) => return Arc::try_unwrap(err).unwrap().into_response(),
+            OutcomeNotFound | PredictionNotFound => StatusCode::BAD_REQUEST,
         };
 
         (status_code, self.to_string()).into_response()
-    }
-}
-
-impl From<Report> for PredictionError {
-    fn from(value: Report) -> Self {
-        PredictionError::ApiError(Arc::new(ApiError::InternalError(value.to_string())))
     }
 }
 
@@ -107,7 +100,7 @@ async fn make_prediction(
     Extension(token): Extension<Arc<Token>>,
     Path(streamer): Path<String>,
     Json(payload): Json<MakePrediction>,
-) -> Result<StatusCode, PredictionError> {
+) -> Result<StatusCode, ApiError> {
     info!("{payload:#?}");
     let mut data = data.write().await;
     let simulate = data.simulate;
@@ -115,7 +108,7 @@ async fn make_prediction(
     let s = data.get_by_name(&streamer);
 
     if s.is_none() {
-        return Err(PredictionError::StreamerDoesNotExist);
+        return Err(ApiError::StreamerDoesNotExist);
     }
 
     #[cfg(feature = "analytics")]
@@ -126,12 +119,12 @@ async fn make_prediction(
 
     let prediction = s.predictions.get(&payload.event_id);
     if prediction.is_none() {
-        return Err(PredictionError::PredictionNotFound);
+        return sub_error!(PredictionError::PredictionNotFound);
     }
 
     let (event, _) = prediction.unwrap();
     if let None = event.outcomes.iter().find(|o| o.id == payload.outcome_id) {
-        return Err(PredictionError::OutcomeNotFound);
+        return sub_error!(PredictionError::OutcomeNotFound);
     }
 
     if payload.points.is_some() {
@@ -164,7 +157,7 @@ async fn make_prediction(
                 Ok(StatusCode::CREATED)
             }
             Ok(None) => Ok(StatusCode::ACCEPTED),
-            Err(err) => Err(err.into()),
+            Err(err) => Err(ApiError::internal_error(err)),
         }
     }
 }
@@ -176,7 +169,7 @@ async fn place_bet(
     token: &Token,
     simulate: bool,
     #[cfg(feature = "analytics")] analytics: (Arc<crate::analytics::AnalyticsWrapper>, &str, &str),
-) -> Result<(), PredictionError> {
+) -> Result<(), ApiError> {
     info!("Prediction {} with {} points", event_id, points);
     gql::make_prediction(
         points,
@@ -185,15 +178,19 @@ async fn place_bet(
         &token.access_token,
         simulate,
     )
-    .await?;
+    .await
+    .map_err(ApiError::twitch_api_error)?;
 
     #[cfg(feature = "analytics")]
     {
         let channel_id = analytics
             .1
             .parse::<i32>()
-            .map_err(|err| Into::<Report>::into(err))?;
-        let points = gql::get_channel_points(&[analytics.2], &token.access_token).await?;
+            .map_err(|err| err.into())
+            .map_err(ApiError::internal_error)?;
+        let points = gql::get_channel_points(&[analytics.2], &token.access_token)
+            .await
+            .map_err(ApiError::twitch_api_error)?;
         analytics
             .0
             .execute(|analytics| {
@@ -204,8 +201,7 @@ async fn place_bet(
                     PointsInfo::Prediction(event_id, entry_id),
                 )
             })
-            .await
-            .map_err(|err| PredictionError::ApiError(Arc::new(ApiError::AnalyticsError(err))))?;
+            .await?;
     }
     Ok(())
 }
@@ -229,13 +225,12 @@ struct GetPredictionQuery {
 async fn get_live_prediction(
     axum::extract::Query(query): axum::extract::Query<GetPredictionQuery>,
     State(data): State<ApiState>,
-) -> Result<Json<Option<Prediction>>, PredictionError> {
+) -> Result<Json<Option<Prediction>>, ApiError> {
     let writer = data.write().await;
     let res = writer
         .analytics
         .execute(|analytics| analytics.get_live_prediction(query.channel_id, &query.prediction_id))
-        .await
-        .map_err(|err| PredictionError::ApiError(Arc::new(ApiError::AnalyticsError(err))))?;
+        .await?;
     Ok(Json(res))
 }
 

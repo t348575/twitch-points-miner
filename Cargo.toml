@@ -33,6 +33,7 @@ thiserror = "1"
 utoipa = { version = "4", features = ["axum_extras", "chrono"], optional = true }
 utoipa-swagger-ui = { version = "6", features = ["axum"], optional = true }
 tower-http = { version = "0.5", features = ["trace", "cors", "fs"], optional = true }
+indexmap = { version = "2.2", features = ["serde"] }
 
 [features]
 web_api = ["dep:axum", "dep:utoipa", "dep:utoipa-swagger-ui", "twitch_api/utoipa", "dep:tower-http"]
@@ -43,8 +44,8 @@ twitch_api = { features = ["pubsub", "unsupported", "time"], git = "https://gith
 env_logger = "0.11"
 
 [profile.release]
-opt-level = 's'
-lto = true
+opt-level = 'z'
+strip = true
 
 [[bin]]
 name = "twitch-points-miner"

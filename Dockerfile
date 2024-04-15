@@ -4,20 +4,17 @@ COPY frontend /
 RUN npm i
 RUN npm run build
 
-FROM t348575/muslrust-chef:1.77.1-stable as planner
+FROM clux/muslrust as builder
 WORKDIR /app
-COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
-
-FROM planner AS builder
-WORKDIR /app
-ARG RUSTFLAGS='-C target-feature=+crt-static -C link-arg=-s -C strip=symbols -C linker=clang -C link-arg=-fuse-ld=lld'
-COPY --from=planner /app/recipe.json recipe.json
-RUN RUSTFLAGS="$RUSTFLAGS" cargo chef cook --release --target x86_64-unknown-linux-musl --recipe-path recipe.json --features web_api,analytics
+RUN apt update && apt install clang wget -y
+RUN wget https://github.com/rui314/mold/releases/download/v2.30.0/mold-2.30.0-x86_64-linux.tar.gz
+RUN tar -xvzf mold-2.30.0-x86_64-linux.tar.gz
+RUN cp mold-2.30.0-x86_64-linux/bin/mold /usr/local/bin
+ARG RUSTFLAGS='-C strip=symbols -C linker=clang -C link-arg=-fuse-ld=/usr/local/bin/mold'
 COPY . .
 RUN RUSTFLAGS="$RUSTFLAGS" cargo build --release --target x86_64-unknown-linux-musl --features web_api,analytics
 
-FROM scratch AS runtime
+FROM busybox AS runtime
 COPY --from=frontend /dist /dist
 WORKDIR /
 COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/twitch-points-miner /app

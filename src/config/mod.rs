@@ -1,6 +1,5 @@
-use std::collections::HashMap;
-
 use color_eyre::{eyre::eyre, Result};
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -11,8 +10,9 @@ pub mod strategy;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
-    pub streamers: HashMap<String, ConfigType>,
-    pub presets: Option<HashMap<String, StreamerConfig>>,
+    pub watch_priority: Option<Vec<String>>,
+    pub streamers: IndexMap<String, ConfigType>,
+    pub presets: Option<IndexMap<String, StreamerConfig>>,
     #[cfg(feature = "analytics")]
     #[serde(default = "defaults::_db_path_default")]
     pub analytics_db: String,

@@ -76,6 +76,14 @@ async fn main() -> Result<()> {
     let c_original = c.clone();
     c.parse_and_validate()?;
 
+    for item in c.watch_priority.clone().unwrap_or_default() {
+        if !c.streamers.contains_key(&item) {
+            return Err(eyre!(format!(
+                "Channel in watch_priority not found in streamers list {item}"
+            )));
+        }
+    }
+
     let token: twitch::auth::Token = serde_json::from_str(
         &fs::read_to_string(args.token)
             .await

@@ -10,6 +10,7 @@ use color_eyre::{
     Result,
 };
 use futures::StreamExt;
+use indexmap::IndexMap;
 use rand::{
     distributions::{Alphanumeric, DistString},
     Rng,
@@ -38,7 +39,7 @@ use twitch_api::{
 };
 
 use crate::{
-    config::{self, filters::filter_matches, Config, ConfigType, StreamerConfig},
+    config::{self, filters::filter_matches, strategy, Config, ConfigType, StreamerConfig},
     live::Events,
     twitch::{api, auth::Token, gql, ws},
     types::{
@@ -105,7 +106,7 @@ impl PubSub {
         channels: Vec<((UserId, StreamerInfo), &ConfigType)>,
         points: Vec<(u32, Option<String>)>,
         active_predictions: Vec<Vec<(Event, bool)>>,
-        presets: HashMap<String, StreamerConfig>,
+        presets: IndexMap<String, StreamerConfig>,
         simulate: bool,
         token: Token,
         user_info: (String, String),
@@ -601,14 +602,16 @@ pub async fn prediction_logic(
 
                 let empty_vec = Vec::new();
                 let points = s
-                    .high_odds
+                    .detailed
                     .as_ref()
                     .unwrap_or(&empty_vec)
                     .into_iter()
                     .filter(|x| -> bool {
-                        if (p <= x.low_threshold || p >= x.high_threshold)
-                            && rng.gen_bool(x.high_odds_attempt_rate)
-                        {
+                        let does_match = match x._type {
+                            strategy::OddsComparisonType::Le => p <= x.threshold,
+                            strategy::OddsComparisonType::Ge => p >= x.threshold,
+                        };
+                        if does_match && rng.gen_bool(x.attempt_rate) {
                             return true;
                         }
                         false
@@ -620,7 +623,7 @@ pub async fn prediction_logic(
                         debug!("Using high odds config {s:#?}");
                         return Ok(Some((
                             prediction.0.outcomes[idx].id.clone(),
-                            s.high_odds_points.value(streamer.points),
+                            s.points.value(streamer.points),
                         )));
                     }
                     None => {
@@ -642,41 +645,57 @@ pub async fn prediction_logic(
 async fn view_points(pubsub: Arc<RwLock<PubSub>>) {
     sleep(Duration::from_secs(5)).await;
     async fn inner(pubsub: &Arc<RwLock<PubSub>>) -> Result<()> {
-        let (streamer, user_id, user_name, spade_url, access_token) = {
+        let (streamers, user_id, user_name, spade_url, access_token, watch_priority) = {
             let reader = pubsub.read().await;
-            let streamer = reader
+            let streamers = reader
                 .streamers
                 .iter()
                 .filter(|x| x.1.info.live)
-                .next()
-                .map(|x| (x.0.clone(), x.1.clone()));
+                .map(|x| (x.0.clone(), x.1.clone()))
+                .collect::<Vec<_>>();
 
             (
-                streamer,
+                streamers,
                 reader.user_id.parse()?,
                 reader.user_name.clone(),
                 reader.spade_url.clone().ok_or(eyre!("Spade URL not set"))?,
                 reader.token.access_token.clone(),
+                reader.config.watch_priority.clone().unwrap_or_default(),
             )
         };
 
-        if streamer.is_none() {
-            info!("No streamer found");
+        if streamers.len() == 0 {
+            debug!("No streamer found");
             sleep(Duration::from_secs(60)).await;
             return Ok(());
         }
 
-        let (id, streamer) = streamer.unwrap();
-        debug!("Watching {}", streamer.info.channel_name);
-        api::set_viewership(
-            user_name,
-            user_id,
-            id.clone(),
-            streamer.info,
-            &spade_url,
-            &access_token,
-        )
-        .await?;
+        let mut watch_items = Vec::new();
+        for item in &watch_priority {
+            if let Some(s) = streamers.iter().find(|x| x.1.info.channel_name.eq(item)) {
+                watch_items.push(s);
+            }
+        }
+
+        // streamers not given in a priority order
+        for item in &streamers {
+            if !watch_priority.contains(&item.1.info.channel_name) {
+                watch_items.push(item);
+            }
+        }
+
+        for (id, streamer) in watch_items.into_iter().take(2) {
+            debug!("Watching {}", streamer.info.channel_name);
+            api::set_viewership(
+                user_name.clone(),
+                user_id,
+                id.clone(),
+                streamer.info.clone(),
+                &spade_url,
+                &access_token,
+            )
+            .await?;
+        }
         Ok(())
     }
 
@@ -789,7 +808,7 @@ mod test {
 
     use crate::{
         config::{
-            strategy::{DefaultPrediction, HighOdds, Strategy},
+            strategy::{DefaultPrediction, DetailedOdds, Strategy},
             StreamerConfig,
         },
         pubsub::prediction_logic,
@@ -879,21 +898,21 @@ mod test {
                 },
             };
 
-            d.high_odds = Some(vec![
-                HighOdds {
-                    low_threshold: 0.10,
-                    high_threshold: 0.90,
-                    high_odds_attempt_rate: 0.00,
-                    high_odds_points: s::Points {
+            d.detailed = Some(vec![
+                DetailedOdds {
+                    _type: s::OddsComparisonType::Le,
+                    threshold: 0.10,
+                    attempt_rate: 0.00,
+                    points: s::Points {
                         max_value: 1000,
                         percent: 0.001,
                     },
                 },
-                HighOdds {
-                    low_threshold: 0.30,
-                    high_threshold: 0.70,
-                    high_odds_attempt_rate: 0.00,
-                    high_odds_points: s::Points {
+                DetailedOdds {
+                    _type: s::OddsComparisonType::Le,
+                    threshold: 0.30,
+                    attempt_rate: 0.00,
+                    points: s::Points {
                         max_value: 5000,
                         percent: 0.01,
                     },
@@ -961,21 +980,21 @@ mod test {
                 },
             };
 
-            d.high_odds = Some(vec![
-                HighOdds {
-                    low_threshold: 0.10,
-                    high_threshold: 0.90,
-                    high_odds_attempt_rate: 1.0,
-                    high_odds_points: s::Points {
+            d.detailed = Some(vec![
+                DetailedOdds {
+                    _type: s::OddsComparisonType::Le,
+                    threshold: 0.10,
+                    attempt_rate: 1.0,
+                    points: s::Points {
                         max_value: 1000,
                         percent: high_odds_percentage,
                     },
                 },
-                HighOdds {
-                    low_threshold: 0.30,
-                    high_threshold: 0.70,
-                    high_odds_attempt_rate: 0.00,
-                    high_odds_points: s::Points {
+                DetailedOdds {
+                    _type: s::OddsComparisonType::Le,
+                    threshold: 0.30,
+                    attempt_rate: 0.00,
+                    points: s::Points {
                         max_value: 5000,
                         percent: 0.01,
                     },
