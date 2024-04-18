@@ -65,7 +65,7 @@ pub async fn streamer_metadata(
     #[serde(rename_all = "camelCase")]
     pub struct Stream {
         pub id: UserId,
-        pub game: Game,
+        pub game: Option<Game>,
     }
 
     impl User {
@@ -74,7 +74,7 @@ pub async fn streamer_metadata(
                 live: self.stream.is_some(),
                 broadcast_id: self.stream.clone().map(|x| x.id),
                 channel_name,
-                game: self.stream.map(|x| x.game),
+                game: self.stream.map(|x| x.game).map_or(None, |x| x),
             }
         }
     }

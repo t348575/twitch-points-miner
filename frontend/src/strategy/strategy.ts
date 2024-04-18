@@ -54,7 +54,10 @@ export function detailed_strategy_parse(obj: any): any {
 }
 
 export function detailed_strategy_stringify(obj: any): any {
-  return detailed_strategy_apply_function(obj, (x) => x.toString());
+  return detailed_strategy_apply_function(
+    detailed_strategy_apply_function(obj, (x) => x * 100.0, true),
+    (x) => x.toString(),
+  );
 }
 
 export const DETAILED_STRATEGY_ODDS_COMPARISON_TYPES = [

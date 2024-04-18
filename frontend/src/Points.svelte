@@ -1,9 +1,7 @@
 <script lang="ts">
-  import type { components, paths } from "./api";
-  import createClient from "openapi-fetch";
-  import { onMount } from "svelte";
+  import type { components } from "./api";
   import { Button } from "$lib/components/ui/button";
-  import { Calendar, RefreshCcw } from "lucide-svelte";
+  import { Calendar } from "lucide-svelte";
   import {
     CalendarDate,
     DateFormatter,
@@ -21,61 +19,39 @@
     VisBulletLegend,
     VisAxis,
   } from "@unovis/svelte";
-  import { writable } from "svelte/store";
+  import { get, writable } from "svelte/store";
   import * as Select from "$lib/components/ui/select";
   import type { Selected } from "bits-ui";
-  import * as Card from "$lib/components/ui/card";
-  import * as Table from "$lib/components/ui/table";
-  import { Input } from "$lib/components/ui/input";
-  import ErrorAlert from "$lib/components/ui/ErrorAlert.svelte";
-  import {
-    get_app_state,
-    get_live_streamers,
-    get_timeline,
-    place_bet_streamer,
-    get_last_prediction,
-  } from "./common";
+  import { get_timeline, streamers, type Streamer } from "./common";
 
-  const client = createClient<paths>({
-    baseUrl: import.meta.env.DEV
-      ? "http://localhost:3000"
-      : window.location.href,
-  });
-
-  let streamers: components["schemas"]["PubSub"]["streamers"];
-  interface Streamer {
-    name: string | undefined;
-    id: number;
-    points: number;
-  }
   let streamers_name: Streamer[] = [];
   let selected_streamers: Streamer[] = [];
   let s_selected = streamers_name.map(() => "outline");
-  let sort_selection = { value: "Descending", label: "Descending" };
-
-  interface StreamerPrediction {
-    label: string;
-    value: number;
-    streamer: components["schemas"]["LiveStreamer"];
-  }
-  let selected_streamer_for_prediction: StreamerPrediction | undefined;
-  let live_streamers: StreamerPrediction[] = [];
-  let prediction: (components["schemas"]["Event"] & boolean) | undefined;
-  let pred_total_points = 0;
-  let prediction_made: components["schemas"]["Prediction"] | null = undefined;
-  let outcome: string | undefined;
-  let prediction_points: undefined | number = undefined;
-  let error_message: undefined | string = undefined;
-  $: make_prediction_class = `flex flex-col justify-center items-center ${live_streamers.length == 0 ? "opacity-25 pointer-events-none" : ""}`;
+  let sort_selection: Selected<string> = {
+    value: "Descending",
+    label: "Descending",
+  };
 
   $: {
-    s_selected = streamers_name.map((a) =>
-      selected_streamers.find((b) => b.id == a.id) == undefined
-        ? ""
-        : "outline",
-    );
-    render_timeline();
+    if (streamers_name) {
+      s_selected = streamers_name.map((a) =>
+        selected_streamers.find((b) => b.id == a.id) == undefined
+          ? ""
+          : "outline",
+      );
+      render_timeline();
+    }
   }
+
+  streamers.subscribe(s => {
+    streamers_name = s
+    if (streamers_name.length > 0) {
+      sort_streamers(sort_selection);
+      selected_streamers = [streamers_name[0] as Streamer];
+
+      render_timeline();
+    }
+  })
 
   interface PointData {
     idx: Date;
@@ -150,43 +126,6 @@
     });
   }
 
-  onMount(async () => {
-    streamers = (await get_app_state())["streamers"];
-    for (const v in streamers) {
-      streamers_name.push({
-        name: streamers[v]?.info.channelName,
-        id: parseInt(v, 10),
-        points: streamers[v]?.points,
-      });
-    }
-    streamers_name = streamers_name;
-    sort_streamers(sort_selection);
-    selected_streamers = [streamers_name[0]];
-
-    await render_timeline();
-    await refresh_live_streamers();
-  });
-
-  async function refresh_live_streamers() {
-    const live_s = await get_live_streamers();
-    live_streamers = live_s
-      .sort((a, b) => {
-        return (
-          Object.keys(b.state.predictions).length -
-          Object.keys(a.state.predictions).length
-        );
-      })
-      .map((a) => ({
-        value: a.id,
-        label: a.state.info.channelName,
-        streamer: a,
-      }));
-
-    if (selected_streamer_for_prediction) {
-      await select_streamer_for_prediction(selected_streamer_for_prediction);
-    }
-  }
-
   async function render_timeline() {
     let idx = 0;
     let from = new Date(
@@ -247,73 +186,6 @@
       }
     }
   }
-
-  async function select_streamer_for_prediction(
-    v: Selected<number> | undefined,
-  ) {
-    selected_streamer_for_prediction = v;
-
-    if (v == undefined) {
-      return;
-    }
-
-    const l = live_streamers.find((a) => v.value == a.value);
-    if (l) {
-      const preds = Object.keys(l.streamer.state.predictions);
-      if (preds.length == 0) {
-        prediction = undefined;
-        prediction_made = undefined;
-        return;
-      }
-
-      prediction = l.streamer.state.predictions[preds[0]][0];
-      pred_total_points = prediction?.outcomes.reduce(
-        (n, { total_points }) => (n += total_points),
-        0,
-      );
-      if (l.streamer.state.predictions[preds[0]][1]) {
-        prediction_made = await get_last_prediction(
-          v.value,
-          l.streamer.state.predictions[preds[0]][0].id,
-        );
-      }
-    }
-  }
-
-  function choose_outcome(id: string | undefined) {
-    if (outcome == id) {
-      outcome = undefined;
-    } else {
-      outcome = id;
-    }
-  }
-
-  async function place_bet() {
-    let event_id = prediction?.id;
-    let outcome_id = outcome;
-
-    let points = null;
-    if (prediction_points != undefined && prediction_points > 0) {
-      points = parseInt(prediction_points, 10);
-    }
-
-    try {
-      await place_bet_streamer(
-        live_streamers.find(
-          (a) => a.value == selected_streamer_for_prediction?.value,
-        )?.streamer.state.info.channelName,
-        event_id,
-        outcome_id,
-        points,
-      );
-    } catch (err) {
-      error_message = err as string;
-      return;
-    }
-
-    error_message = undefined;
-    prediction_points = undefined;
-  }
 </script>
 
 <div class="flex flex-col">
@@ -322,7 +194,7 @@
       <div class="flex- w-32">
         <Select.Root
           selected={sort_selection}
-          onSelectedChange={(v) => sort_streamers(v)}
+          onSelectedChange={sort_streamers}
         >
           <Select.Trigger>
             <Select.Value placeholder="Points" />
@@ -395,122 +267,5 @@
         <VisBulletLegend items={selected_streamers} />
       </div>
     </div>
-  </div>
-  <div class="w-1/2 self-center mb-4">
-    <Card.Root>
-      <Card.Header class="flex flex-row justify-center items-center">
-        <p class="text-xl mr-2 inline">
-          {live_streamers.length == 0 ? "No streamers live" : "Make prediction"}
-        </p>
-      </Card.Header>
-      <Card.Content class={make_prediction_class}>
-        <div class="w-1/2 flex flex-row">
-          <Select.Root
-            selected={selected_streamer_for_prediction}
-            onSelectedChange={(v) => select_streamer_for_prediction(v)}
-          >
-            <Select.Trigger>
-              <Select.Value placeholder="Streamer" />
-            </Select.Trigger>
-            <Select.Content>
-              {#each live_streamers as s}
-                <Select.Item value={s.value}>{s.label}</Select.Item>
-              {/each}
-            </Select.Content>
-          </Select.Root>
-          <Button
-            on:click={refresh_live_streamers}
-            variant="outline"
-            size="icon"
-            class="self-center ml-2"
-          >
-            <RefreshCcw
-              class="h-[1.2rem] w-[1.2rem] rotate-0 scale-100 transition-all"
-            />
-          </Button>
-        </div>
-        <div class="w-3/4 mt-8 text-center">
-          {#if prediction}
-            <p class="text-xl">
-              Points: {live_streamers.find(
-                (a) => a.value == selected_streamer_for_prediction.value,
-              )?.streamer.state.points}
-            </p>
-            <p class="text-xl">{prediction.title}</p>
-            <Table.Root>
-              <Table.Header>
-                <Table.Row>
-                  <Table.Head class="text-center">Outcome</Table.Head>
-                  <Table.Head class="text-center">Points</Table.Head>
-                  <Table.Head class="text-center">Users</Table.Head>
-                  <Table.Head class="text-center">Odds</Table.Head>
-                </Table.Row>
-              </Table.Header>
-              <Table.Body>
-                {#each prediction.outcomes as o}
-                  <Table.Row
-                    on:click={() => choose_outcome(o.id)}
-                    class={outcome == o.id
-                      ? "bg-zinc-700 hover:bg-zinc-700"
-                      : ""}
-                  >
-                    <Table.Cell>{o.title}</Table.Cell>
-                    <Table.Cell>{o.total_points}</Table.Cell>
-                    <Table.Cell>{o.total_users}</Table.Cell>
-                    <Table.Cell
-                      >{(100.0 / (pred_total_points / o.total_points)).toFixed(
-                        2,
-                      )}</Table.Cell
-                    >
-                  </Table.Row>
-                {/each}
-              </Table.Body>
-            </Table.Root>
-          {:else if selected_streamer_for_prediction != undefined && prediction == undefined}
-            <p>No prediction in progress</p>
-          {/if}
-        </div>
-      </Card.Content>
-      {#if prediction && prediction_made == undefined}
-        <Card.Footer class="flex flex-col">
-          {#if outcome}
-            <p class="m-2">
-              Selected outcome: {prediction.outcomes.find(
-                (a) => a.id == outcome,
-              )?.title}
-            </p>
-          {/if}
-          <div class="flex flex-wrap justify-center">
-            {#if error_message}
-              <ErrorAlert message={error_message} />
-            {/if}
-            <Input
-              type="number"
-              placeholder="points"
-              class="max-w-48 mr-2"
-              bind:value={prediction_points}
-              max={live_streamers.find(
-                (a) => a.value == selected_streamer_for_prediction.value,
-              )?.streamer.state.points}
-              min={0}
-            />
-            <Button on:click={place_bet} disabled={outcome == undefined}
-              >Make prediction</Button
-            >
-            <p class="mt-2">
-              Note: If prediction points is 0, the app runs the prediction logic
-              without the filters
-            </p>
-          </div>
-        </Card.Footer>
-      {:else if prediction && prediction_made}
-        <Card.Footer class="flex flex-col">
-          Bet placed! Outcome: {prediction.outcomes.find(
-            (a) => a.id == prediction_made?.placed_bet.Some.outcome_id,
-          )?.title}
-          Points: {prediction_made?.placed_bet.Some.points}
-        </Card.Footer>
-      {/if}
-    </Card.Root>
   </div>
 </div>

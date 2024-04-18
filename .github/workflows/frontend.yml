@@ -6,8 +6,8 @@ on:
   pull_request:
     branches: [ "master" ]
 defaults:
- run:
-  working-directory: ./frontend
+  run:
+    working-directory: ./frontend
 jobs:
   build:
     runs-on: ubuntu-latest

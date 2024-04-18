@@ -1,5 +1,6 @@
 <script lang="ts">
   import * as Table from "$lib/components/ui/table";
+  import * as Card from "$lib/components/ui/card";
   import * as Select from "$lib/components/ui/select";
   import * as Menubar from "$lib/components/ui/menubar";
   import * as Dialog from "$lib/components/ui/dialog";
@@ -28,10 +29,15 @@
     get_presets,
     add_or_update_preset,
     delete_preset,
+    get_watch_priority,
+    set_watch_priority,
+    streamers,
   } from "./common";
   import { ArrowUpDown, SlidersHorizontal, X } from "lucide-svelte";
   import Config from "./Config.svelte";
   import type { components } from "./api";
+  import SortableList from "$lib/components/ui/SortableList.svelte";
+  import { Menu } from "lucide-svelte";
 
   let data = writable<Streamer[]>([]);
 
@@ -70,6 +76,7 @@
 
   onMount(async () => {
     data.set(await get_streamers());
+    watch_priority = await get_watch_priority();
   });
 
   const { headerRows, pageRows, tableAttrs, tableBodyAttrs, pluginStates } =
@@ -98,6 +105,10 @@
     label: string;
     data: components["schemas"]["StreamerConfig"];
   }[] = [];
+  let watch_priority: string[] = [];
+  const sort_priority_list = (ev) => {
+    watch_priority = ev.detail;
+  };
 
   $: if (!remove_dialog) {
     remove_preset_mode = false;
@@ -265,6 +276,16 @@
     }
     data.set(await get_streamers());
   }
+
+  async function update_watch_priority() {
+    let msg = "Watch priority updated";
+    try {
+      await set_watch_priority(watch_priority);
+    } catch (err) {
+      msg = `Failed to update watch priority: ${err}`;
+    }
+    toast(msg);
+  }
 </script>
 
 <div class="flex flex-col justify-center items-center">
@@ -359,6 +380,27 @@
       </Table.Body>
     </Table.Root>
   </div>
+
+  <Card.Root class="mt-4 xs:w-1/3 md:w-1/4">
+    <Card.Header>
+      <Card.Title>Watch priority</Card.Title>
+    </Card.Header>
+    <Card.Content>
+      <SortableList list={watch_priority} on:sort={sort_priority_list} let:item>
+        <div class="flex cursor-pointer border-2 rounded-md p-2">
+          <p class="mr-1">{item}</p>
+          {#if $streamers.find(x => x.data.info.live && x.data.info.channelName == item) !== undefined }
+            <div class="self-center ml-1 flex h-2 w-2 items-center justify-center rounded-full bg-green-600"></div>
+          {/if}
+          <div class="flex-grow"></div>
+          <Menu />
+        </div>
+      </SortableList>
+      <div class="text-center mt-2">
+        <Button on:click={update_watch_priority}>Save</Button>
+      </div>
+    </Card.Content>
+  </Card.Root>
 
   <Dialog.Root bind:open={config_dialog}>
     <Dialog.Content>

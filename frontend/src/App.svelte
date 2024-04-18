@@ -5,6 +5,13 @@
   import { Button } from "$lib/components/ui/button";
   import Points from "./Points.svelte";
   import Setup from "./Setup.svelte";
+  import Predictions from "./Predictions.svelte";
+  import { onMount } from "svelte";
+  import { get_streamers, streamers } from "./common";
+
+  onMount(async () => {
+    streamers.set(await get_streamers());
+  });
 </script>
 
 <main class="container min-w-full min-h-full pt-4 font-sans">
@@ -12,6 +19,7 @@
   <Tabs.Root value="Points">
     <Tabs.List>
       <Tabs.Trigger value="Points">Points</Tabs.Trigger>
+      <Tabs.Trigger value="Predictions">Predictions</Tabs.Trigger>
       <Tabs.Trigger value="Setup">Setup</Tabs.Trigger>
     </Tabs.List>
     <div class="flex justify-between items-center">
@@ -35,8 +43,11 @@
     <Tabs.Content value="Points">
       <Points />
     </Tabs.Content>
+    <Tabs.Content value="Predictions">
+      <Predictions />
+    </Tabs.Content>
     <Tabs.Content value="Setup">
-      <Setup/>
+      <Setup />
     </Tabs.Content>
   </Tabs.Root>
 </main>

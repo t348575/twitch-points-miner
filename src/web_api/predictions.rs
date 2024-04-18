@@ -101,7 +101,6 @@ async fn make_prediction(
     Path(streamer): Path<String>,
     Json(payload): Json<MakePrediction>,
 ) -> Result<StatusCode, ApiError> {
-    info!("{payload:#?}");
     let mut data = data.write().await;
     let simulate = data.simulate;
 
@@ -127,7 +126,7 @@ async fn make_prediction(
         return sub_error!(PredictionError::OutcomeNotFound);
     }
 
-    if payload.points.is_some() {
+    if payload.points.is_some() && *payload.points.as_ref().unwrap() > 0 {
         place_bet(
             payload.event_id.clone(),
             payload.outcome_id,

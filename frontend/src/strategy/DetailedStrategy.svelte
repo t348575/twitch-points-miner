@@ -138,7 +138,7 @@
       <Plus class="rounded-full w-10 h-10" size={4} />
     </Button>
   </div>
-  <ScrollArea class="odds-scroll-area">
+  <ScrollArea class="odds-scroll-area flex flex-col">
     {#each detailed_odds as f, index}
       {#if f.error}
         <Alert.Root class="border-red-500 mb-4">
