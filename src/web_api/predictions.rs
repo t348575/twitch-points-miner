@@ -101,7 +101,6 @@ async fn make_prediction(
     Path(streamer): Path<String>,
     Json(payload): Json<MakePrediction>,
 ) -> Result<StatusCode, ApiError> {
-    info!("{payload:#?}");
     let mut data = data.write().await;
     let simulate = data.simulate;
 
@@ -127,13 +126,14 @@ async fn make_prediction(
         return sub_error!(PredictionError::OutcomeNotFound);
     }
 
-    if payload.points.is_some() {
+    if payload.points.is_some() && *payload.points.as_ref().unwrap() > 0 {
         place_bet(
             payload.event_id.clone(),
             payload.outcome_id,
             *payload.points.as_ref().unwrap(),
             &token,
             simulate,
+            &s.info.channel_name,
             #[cfg(feature = "analytics")]
             (analytics, &s_id, &streamer),
         )
@@ -149,6 +149,7 @@ async fn make_prediction(
                     p,
                     &token,
                     simulate,
+                    &s.info.channel_name,
                     #[cfg(feature = "analytics")]
                     (analytics, &s_id, &streamer),
                 )
@@ -168,9 +169,13 @@ async fn place_bet(
     points: u32,
     token: &Token,
     simulate: bool,
+    streamer_name: &str,
     #[cfg(feature = "analytics")] analytics: (Arc<crate::analytics::AnalyticsWrapper>, &str, &str),
 ) -> Result<(), ApiError> {
-    info!("Prediction {} with {} points", event_id, points);
+    info!(
+        "{}: predicting {}, with points {}",
+        streamer_name, event_id, points
+    );
     gql::make_prediction(
         points,
         &event_id,

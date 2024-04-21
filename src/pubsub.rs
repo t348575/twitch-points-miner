@@ -281,6 +281,40 @@ impl PubSub {
         Ok(())
     }
 
+    #[cfg(feature = "analytics")]
+    async fn upsert_prediction(&mut self, streamer: &UserId, event: &Event) -> Result<()> {
+        let channel_id = streamer.as_str().parse()?;
+        let created_at = chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(
+            event.created_at.as_str(),
+        )?
+        .naive_local();
+        let closed_at = if let Some(x) = &event.ended_at {
+            Some(
+                chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(x.as_str())?
+                    .naive_local(),
+            )
+        } else {
+            None
+        };
+
+        self.analytics
+            .execute(|analytics| {
+                analytics.upsert_prediction(&Prediction {
+                    channel_id,
+                    prediction_id: event.id.clone(),
+                    title: event.title.clone(),
+                    prediction_window: event.prediction_window_seconds,
+                    outcomes: event.outcomes.clone().into(),
+                    winning_outcome_id: None,
+                    placed_bet: crate::analytics::model::PredictionBetWrapper::None,
+                    created_at,
+                    closed_at,
+                })
+            })
+            .await?;
+        Ok(())
+    }
+
     async fn handle_prediction_event(&mut self, event: Event, streamer: UserId) -> Result<()> {
         if event.locked_at.is_some() && event.ended_at.is_none() {
             debug!("Event {} locked, but not yet ended", event.id);
@@ -300,40 +334,7 @@ impl PubSub {
                 .insert(event.id.clone(), (event.clone(), false));
 
             #[cfg(feature = "analytics")]
-            {
-                let channel_id = streamer.as_str().parse()?;
-                let created_at =
-                    chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(
-                        event.created_at.as_str(),
-                    )?
-                    .naive_local();
-                let closed_at = if let Some(x) = event.ended_at {
-                    Some(
-                        chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(
-                            x.as_str(),
-                        )?
-                        .naive_local(),
-                    )
-                } else {
-                    None
-                };
-
-                self.analytics
-                    .execute(|analytics| {
-                        analytics.create_prediction(&Prediction {
-                            channel_id,
-                            prediction_id: event.id,
-                            title: event.title,
-                            prediction_window: event.prediction_window_seconds,
-                            outcomes: event.outcomes.into(),
-                            winning_outcome_id: None,
-                            placed_bet: crate::analytics::model::PredictionBetWrapper::None,
-                            created_at,
-                            closed_at,
-                        })
-                    })
-                    .await?;
-            }
+            self.upsert_prediction(&streamer, &event).await?;
 
             self.try_prediction(&streamer, &event_id).await?;
         } else if event.ended_at.is_some() {
@@ -350,6 +351,8 @@ impl PubSub {
                 {
                     return Ok(());
                 }
+
+                self.upsert_prediction(&streamer, &event).await?;
 
                 let channel_id = event.channel_id.parse()?;
                 let points_value = gql::get_channel_points(
@@ -395,6 +398,9 @@ impl PubSub {
         {
             let event_id = event.id.clone();
             info!("Prediction {} updated", event.id);
+
+            #[cfg(feature = "analytics")]
+            self.upsert_prediction(&streamer, &event).await?;
             if let Some((e, _)) = self
                 .streamers
                 .get_mut(&streamer)
@@ -429,8 +435,8 @@ impl PubSub {
             .context("Prediction logic")?
         {
             info!(
-                "Attempting prediction {}, with points {}",
-                event_id, points_to_bet
+                "{}: predicting {}, with points {}",
+                s.info.channel_name, event_id, points_to_bet
             );
             gql::make_prediction(
                 points_to_bet,
@@ -607,6 +613,7 @@ pub async fn prediction_logic(
                     .unwrap_or(&empty_vec)
                     .into_iter()
                     .filter(|x| -> bool {
+                        debug!("Checking config {x:#?}");
                         let does_match = match x._type {
                             strategy::OddsComparisonType::Le => p <= x.threshold,
                             strategy::OddsComparisonType::Ge => p >= x.threshold,
@@ -628,7 +635,7 @@ pub async fn prediction_logic(
                     }
                     None => {
                         if p >= s.default.min_percentage && p <= s.default.max_percentage {
-                            debug!("Using default odds config");
+                            debug!("Using default odds config {:#?} {}", s.default, p);
                             return Ok(Some((
                                 prediction.0.outcomes[idx].id.clone(),
                                 s.default.points.value(streamer.points),
@@ -705,7 +712,7 @@ async fn view_points(pubsub: Arc<RwLock<PubSub>>) {
                 error!("{err}");
             }
         }
-        sleep(Duration::from_secs(10)).await;
+        sleep(Duration::from_secs(30)).await;
     }
 }
 

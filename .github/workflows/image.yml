@@ -1,0 +1,29 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: [ "master" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: SebRollen/toml-action@v1.2.0
+      id: read_version
+      with:
+        file: 'Cargo.toml'
+        field: 'package.version'
+    - uses: actions/checkout@v3
+    - name: Build the Docker image
+      run: docker build . --file Dockerfile --tag t348575/twitch-points-miner:${{ steps.read_version.outputs.value }}
+    - name: Tag latest
+      run: docker tag t348575/twitch-points-miner:${{ steps.read_version.outputs.value }} t348575/twitch-points-miner:latest
+    - name: Login to docker
+      uses: docker/login-action@f4ef78c080cd8ba55a85445d5b36e214a81df20a
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+    - name: Push image version
+      run: docker push t348575/twitch-points-miner:${{ steps.read_version.outputs.value }}
+    - name: Push latest image
+      run: docker push t348575/twitch-points-miner:latest

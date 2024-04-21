@@ -1,13 +1,18 @@
 import createClient from "openapi-fetch";
 import type { components, paths } from "./api";
+import { writable } from "svelte/store";
+
+export const streamers = writable<Streamer[]>([]);
 
 const client = createClient<paths>({
-  baseUrl: import.meta.env.DEV ? "http://localhost:3000" : window.location.href,
+  baseUrl: import.meta.env.DEV ? "http://tpm.lan:3000" : window.location.href,
 });
 
 export interface Streamer {
   id: number;
   data: components["schemas"]["StreamerState"];
+  name: string;
+  points: number;
 }
 
 export interface ValidateStrategy {
@@ -28,10 +33,13 @@ export async function get_streamers(): Promise<Streamer[]> {
   }
 
   let items: Streamer[] = [];
-  for (const v of Object.keys(data.streamers)) {
+  for (const v in data.streamers) {
+    const s = data.streamers[v] as components["schemas"]["StreamerState"];
     items.push({
       id: parseInt(v, 10),
-      data: data.streamers[v] as components["schemas"]["StreamerState"],
+      data: s,
+      points: s.points,
+      name: s.info.channelName,
     });
   }
 
@@ -209,4 +217,23 @@ export async function get_last_prediction(
     throw error;
   }
   return data;
+}
+
+export async function get_watch_priority(): Promise<string[]> {
+  const { data, error } = await client.GET("/api/config/watch_priority");
+  if (error) {
+    throw error;
+  }
+  return data;
+}
+
+export async function set_watch_priority(
+  watch_priority: string[],
+): Promise<void> {
+  const { error } = await client.POST("/api/config/watch_priority/", {
+    body: watch_priority,
+  });
+  if (error) {
+    throw error;
+  }
 }

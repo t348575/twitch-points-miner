@@ -65,7 +65,7 @@ pub async fn streamer_metadata(
     #[serde(rename_all = "camelCase")]
     pub struct Stream {
         pub id: UserId,
-        pub game: Game,
+        pub game: Option<Game>,
     }
 
     impl User {
@@ -74,7 +74,7 @@ pub async fn streamer_metadata(
                 live: self.stream.is_some(),
                 broadcast_id: self.stream.clone().map(|x| x.id),
                 channel_name,
-                game: self.stream.map(|x| x.game),
+                game: self.stream.map(|x| x.game).map_or(None, |x| x),
             }
         }
     }
@@ -168,6 +168,13 @@ pub async fn make_prediction(
 
     if !res.status().is_success() {
         return Err(eyre!("Failed to place prediction"));
+    }
+
+    let mut res = res.json::<serde_json::Value>().await?;
+    let res = traverse_json(&mut res, ".data.makePrediction.error").unwrap();
+    if !res.is_null() {
+        tracing::error!("Failed to make prediction: {:#?}", res);
+        return Err(eyre!("Failed to make prediction: {:#?}", res));
     }
     Ok(())
 }

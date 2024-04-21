@@ -32,6 +32,7 @@
   import { ArrowUpDown, SlidersHorizontal, X } from "lucide-svelte";
   import Config from "./Config.svelte";
   import type { components } from "./api";
+  import WatchPriority from "./WatchPriority.svelte";
 
   let data = writable<Streamer[]>([]);
 
@@ -98,6 +99,11 @@
     label: string;
     data: components["schemas"]["StreamerConfig"];
   }[] = [];
+
+  let add_watch_priority = false;
+  let remove_watch_priority = false;
+  let view_edit_watch_priority = false;
+  let watch_priority = false;
 
   $: if (!remove_dialog) {
     remove_preset_mode = false;
@@ -195,9 +201,10 @@
     data.set(await get_streamers());
   }
 
-  function view_edit_config() {
+  async function view_edit_config() {
     view_edit = true;
     config_dialog = true;
+    await load_presets();
   }
 
   async function load_presets() {
@@ -265,6 +272,12 @@
     }
     data.set(await get_streamers());
   }
+
+  async function add_streamer_button() {
+    view_edit = false;
+    config_dialog = true;
+    await load_presets();
+  }
 </script>
 
 <div class="flex flex-col justify-center items-center">
@@ -273,12 +286,7 @@
       <Menubar.Menu>
         <Menubar.Trigger>Streamer</Menubar.Trigger>
         <Menubar.Content>
-          <Menubar.Item
-            on:click={() => {
-              view_edit = false;
-              config_dialog = true;
-            }}>Add</Menubar.Item
-          >
+          <Menubar.Item on:click={add_streamer_button}>Add</Menubar.Item>
           <Menubar.Item
             disabled={selected_row_id.length == 0}
             on:click={() => (remove_dialog = true)}>Remove</Menubar.Item
@@ -300,6 +308,29 @@
           <Menubar.Item on:click={add_preset_button}>Add</Menubar.Item>
           <Menubar.Item on:click={remove_preset}>Remove</Menubar.Item>
           <Menubar.Item on:click={view_edit_preset}>View / Edit</Menubar.Item>
+        </Menubar.Content>
+      </Menubar.Menu>
+      <Menubar.Menu>
+        <Menubar.Trigger>Watch priority</Menubar.Trigger>
+        <Menubar.Content>
+          <Menubar.Item
+            on:click={() => {
+              add_watch_priority = true;
+              watch_priority = true;
+            }}>Add</Menubar.Item
+          >
+          <Menubar.Item
+            on:click={() => {
+              remove_watch_priority = true;
+              watch_priority = true;
+            }}>Remove</Menubar.Item
+          >
+          <Menubar.Item
+            on:click={() => {
+              view_edit_watch_priority = true;
+              watch_priority = true;
+            }}>View / Edit</Menubar.Item
+          >
         </Menubar.Content>
       </Menubar.Menu>
     </Menubar.Root>
@@ -361,7 +392,7 @@
   </div>
 
   <Dialog.Root bind:open={config_dialog}>
-    <Dialog.Content>
+    <Dialog.Content class="lg:!min-w-[50%] md:!min-w-[100%]">
       <Dialog.Header>
         <Dialog.Title class="mb-4">
           {#if view_edit}
@@ -380,9 +411,15 @@
             type="text"
             bind:value={channel_name}
             placeholder="Channel name"
+            class="max-w-xs"
           />
         {/if}
-        <Config bind:filters bind:strategy bind:this={config_component} />
+        <Config
+          bind:filters
+          bind:strategy
+          bind:this={config_component}
+          {preset_list}
+        />
         <Button
           class="mt-4 max-w-24"
           on:click={view_edit ? save_config : add_streamer}
@@ -398,14 +435,14 @@
   </Dialog.Root>
 
   <Dialog.Root bind:open={preset_dialog}>
-    <Dialog.Content>
+    <Dialog.Content class="lg:!min-w-[50%] md:!min-w-[100%]">
       <Dialog.Header>
         <Dialog.Title class="mb-4">Preset config</Dialog.Title>
       </Dialog.Header>
       <div class="flex flex-col items-center">
         {#if view_edit}
           <Select.Root bind:selected={preset}>
-            <Select.Trigger class="my-2">
+            <Select.Trigger class="my-2 max-w-xs">
               <Select.Value placeholder="Preset" />
             </Select.Trigger>
             <Select.Content>
@@ -491,5 +528,11 @@
       </AlertDialog.Footer>
     </AlertDialog.Content>
   </AlertDialog.Root>
+  <WatchPriority
+    bind:view_edit_watch_priority
+    bind:add_watch_priority
+    bind:remove_watch_priority
+    bind:dialog={watch_priority}
+  />
   <Toaster />
 </div>
