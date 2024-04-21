@@ -5,7 +5,7 @@ import { writable } from "svelte/store";
 export const streamers = writable<Streamer[]>([]);
 
 const client = createClient<paths>({
-  baseUrl: import.meta.env.DEV ? "http://localhost:3000" : window.location.href,
+  baseUrl: import.meta.env.DEV ? "http://tpm.lan:3000" : window.location.href,
 });
 
 export interface Streamer {

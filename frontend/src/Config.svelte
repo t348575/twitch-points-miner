@@ -12,6 +12,7 @@
     DETAILED_STRATEGY_ODDS_COMPARISON_TYPES,
     detailed_strategy_stringify,
   } from "./strategy/strategy";
+    import type { Selected } from "bits-ui";
 
   export let filters: FilterType[];
   export let strategy: { value: string; label: string };
@@ -26,7 +27,7 @@
   ];
   const PRESET_STRATEGY = { value: "Preset", label: "Preset" };
   const SPECIFIC_STRATEGY = { value: "Specific", label: "Specific" };
-  let preset_strategy = "";
+  let preset_strategy: Selected<string> = { value: '', label: undefined };
   let filters_alert = false;
   let filters_error_message = "";
   let strategy_component_instance: { validate(): ValidateStrategy };
@@ -43,6 +44,11 @@
     },
   ];
   let strategy_props = {};
+  export let preset_list: {
+    value: string;
+    label: string;
+    data: components["schemas"]["StreamerConfig"];
+  }[] = [];
 
   function selected_strategy_change(v: any) {
     strategy_type = v;
@@ -89,7 +95,7 @@
       }
     } else {
       strategy = PRESET_STRATEGY;
-      preset_strategy = config._type.Preset;
+      preset_strategy = { value: config._type.Preset, label: config._type.Preset };
     }
   }
 
@@ -97,7 +103,7 @@
     | components["schemas"]["ConfigType"]
     | undefined {
     if (strategy.value == "Preset") {
-      if (preset_strategy.length == 0) {
+      if (preset_strategy.value.length == 0) {
         strategy_error_message = "Preset strategy is empty";
         strategy_alert = true;
         return;
@@ -106,7 +112,7 @@
       }
 
       return {
-        Preset: preset_strategy,
+        Preset: preset_strategy.value,
       };
     } else {
       if (strategy_type.component == undefined) {
@@ -150,17 +156,17 @@
 
 <div>
   <slot />
-  <div class="flex flex-col m-4 items-center">
+  <div class="flex flex-col m-4 items-center max-w-[100%]">
     {#if strategy_alert}
       <ErrorAlert message={strategy_error_message} />
     {/if}
     <div class="flex items-center gap-4 mb-4">
       Strategy
       <Select.Root bind:selected={strategy} disabled={preset_mode}>
-        <Select.Trigger class="w-36">
+        <Select.Trigger class="w-52">
           <Select.Value placeholder="Strategy type" />
         </Select.Trigger>
-        <Select.Content>
+        <Select.Content class="w-52">
           <Select.Item value={PRESET_STRATEGY.value}
             >{PRESET_STRATEGY.label}</Select.Item
           >
@@ -170,13 +176,17 @@
         </Select.Content>
       </Select.Root>
       {#if strategy.value == "Preset"}
-        <Input
-          type="text"
-          bind:value={preset_strategy}
-          placeholder="Strategy name"
-          class="w-48"
-        />
-      {:else}
+        <Select.Root bind:selected={preset_strategy}>
+          <Select.Trigger class="my-2 max-w-xs">
+            <Select.Value placeholder="Preset" />
+          </Select.Trigger>
+          <Select.Content>
+            {#each preset_list as p}
+              <Select.Item value={p.value}>{p.label}</Select.Item>
+            {/each}
+          </Select.Content>
+        </Select.Root>
+      {:else if strategy.value == "Specific"}
         <Select.Root
           selected={strategy_type}
           onSelectedChange={(v) => selected_strategy_change(v)}
@@ -218,25 +228,33 @@
         {/if}
         {#each filters as f, index}
           <div class="flex m-4 gap-1">
-            <Select.Root bind:selected={f}>
-              <Select.Trigger>
-                <Select.Value placeholder="Filter type" />
-              </Select.Trigger>
-              <Select.Content>
-                {#each filter_types as ft}
-                  <Select.Item value={ft.value}>{ft.label}</Select.Item>
-                {/each}
-              </Select.Content>
-            </Select.Root>
-            <Input
-              type="number"
-              bind:value={f.quantity}
-              placeholder="Value"
-              class="max-w-1/2"
-            />
+            <div>
+              <!-- svelte-ignore a11y-label-has-associated-control -->
+              <label class="text-xs">Filter type</label>
+              <Select.Root bind:selected={f}>
+                <Select.Trigger>
+                  <Select.Value placeholder="Filter type" />
+                </Select.Trigger>
+                <Select.Content>
+                  {#each filter_types as ft}
+                    <Select.Item value={ft.value}>{ft.label}</Select.Item>
+                  {/each}
+                </Select.Content>
+              </Select.Root>
+            </div>
+            <div>
+              <!-- svelte-ignore a11y-label-has-associated-control -->
+              <label class="text-xs">Value</label>
+              <Input
+                type="number"
+                bind:value={f.quantity}
+                placeholder="Value"
+                class="max-w-1/2"
+              />
+            </div>
             <Button
               variant="outline"
-              class="rounded-full w-10 h-10 p-0"
+              class="rounded-full w-10 h-10 p-0 ml-1 mt-6"
               on:click={() => {
                 filters.splice(index, 1);
                 filters = filters;

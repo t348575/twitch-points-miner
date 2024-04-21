@@ -90,35 +90,44 @@
       <Alert.Description>{error}</Alert.Description>
     </Alert.Root>
   {/if}
-  <p class="text-center">Default</p>
-  <div class="grid grid-rows-2 grid-cols-11 gap-1 items-center">
-    <p class="col-span-3">Threshold</p>
-    <Input
-      type="number"
-      placeholder="Max percentage"
-      class="col-span-4"
-      bind:value={default_odds.max_percentage}
-    />
-    <Input
-      type="number"
-      placeholder="Min percentage"
-      class="col-span-4"
-      bind:value={default_odds.min_percentage}
-    />
-
-    <p class="col-span-3">Points</p>
-    <Input
-      type="number"
-      placeholder="Max value"
-      class="col-span-4"
-      bind:value={default_odds.points.max_value}
-    />
-    <Input
-      type="number"
-      placeholder="Percentage"
-      class="col-span-4"
-      bind:value={default_odds.points.percent}
-    />
+  <p class="text-center">Default odds</p>
+  <div class="grid grid-rows-2 grid-cols-12 gap-1 items-center">
+    <div class="col-span-6 mt-4">
+      <label class="text-xs" for="max-threshold">Max threshold</label>
+      <Input
+        type="number"
+        placeholder="Max percentage"
+        id="max-threshold"
+        bind:value={default_odds.max_percentage}
+      />
+    </div>
+    <div class="col-span-6 mt-4">
+      <label class="text-xs" for="min-threshold">Min threshold</label>
+      <Input
+        type="number"
+        placeholder="Min percentage"
+        id="min-threshold"
+        bind:value={default_odds.min_percentage}
+      />
+    </div>
+    <div class="col-span-6">
+      <label class="text-xs" for="max-value">Max points value</label>
+      <Input
+        type="number"
+        placeholder="Max value"
+        id="max-value"
+        bind:value={default_odds.points.max_value}
+      />
+    </div>
+    <div class="col-span-6">
+      <label class="text-xs" for="percentage">Points percentage</label>
+      <Input
+        type="number"
+        placeholder="Percentage"
+        id="percentage"
+        bind:value={default_odds.points.percent}
+      />
+    </div>
   </div>
   <div class="flex m-4 items-center justify-center">
     Detailed odds
@@ -138,7 +147,7 @@
       <Plus class="rounded-full w-10 h-10" size={4} />
     </Button>
   </div>
-  <ScrollArea class="odds-scroll-area flex flex-col">
+  <ScrollArea class="max-h-[25vh] flex flex-col">
     {#each detailed_odds as f, index}
       {#if f.error}
         <Alert.Root class="border-red-500 mb-4">
@@ -147,26 +156,33 @@
           <Alert.Description>{f.error}</Alert.Description>
         </Alert.Root>
       {/if}
-      <div class="grid grid-rows-3 grid-cols-12 gap-1 items-center my-4 mx-1">
-        <Input
-          type="number"
-          placeholder="Threshold"
-          class="col-span-5"
-          bind:value={f.data.threshold}
-        />
-        <Select.Root bind:selected={f._type}>
-          <Select.Trigger class="col-span-5">
-            <Select.Value placeholder="Type" />
-          </Select.Trigger>
-          <Select.Content>
-            {#each DETAILED_STRATEGY_ODDS_COMPARISON_TYPES as d}
-              <Select.Item value={d.value}>{d.label}</Select.Item>
-            {/each}
-          </Select.Content>
-        </Select.Root>
+      <div class="grid grid-rows-3 grid-cols-11 gap-1 items-center my-4 mx-1">
+        <div class="col-span-5">
+          <!-- svelte-ignore a11y-label-has-associated-control -->
+          <label class="text-xs">Odds threshold</label>
+          <Input
+            type="number"
+            placeholder="Threshold"
+            bind:value={f.data.threshold}
+          />
+        </div>
+        <div class="col-span-5">
+          <!-- svelte-ignore a11y-label-has-associated-control -->
+          <label class="text-xs">Threshold type</label>
+          <Select.Root bind:selected={f._type}>
+            <Select.Trigger class="col-span-5">
+              <Select.Value placeholder="Type" />
+            </Select.Trigger>
+            <Select.Content>
+              {#each DETAILED_STRATEGY_ODDS_COMPARISON_TYPES as d}
+                <Select.Item value={d.value}>{d.label}</Select.Item>
+              {/each}
+            </Select.Content>
+          </Select.Root>
+        </div>
         <Button
           variant="outline"
-          class="rounded-full w-10 h-10 p-0 row-span-2 col-span-2 place-self-center"
+          class="rounded-full w-10 h-10 p-0 row-span-3 col-span-1 place-self-center ml-1"
           on:click={() => {
             detailed_odds.splice(index, 1);
             detailed_odds = detailed_odds;
@@ -174,25 +190,33 @@
         >
           <X class="rounded-full w-10 h-10" size={4} />
         </Button>
-        <Input
-          type="number"
-          placeholder="Attempt rate"
-          class="col-span-10"
-          bind:value={f.data.attempt_rate}
-        />
-        <Input
-          type="number"
-          placeholder="Max value"
-          class="col-span-5"
-          bind:value={f.data.points.max_value}
-        />
-        <Input
-          type="number"
-          placeholder="Percentage"
-          class="col-span-5"
-          bind:value={f.data.points.percent}
-        />
-        <p class="col-span-2 text-center">Points</p>
+        <div class="col-span-10">
+          <!-- svelte-ignore a11y-label-has-associated-control -->
+          <label class="text-xs">Attempt rate</label>
+          <Input
+            type="number"
+            placeholder="Attempt rate"
+            bind:value={f.data.attempt_rate}
+          />
+        </div>
+        <div class="col-span-5">
+          <!-- svelte-ignore a11y-label-has-associated-control -->
+          <label class="text-xs">Max points value</label>
+          <Input
+            type="number"
+            placeholder="Max value"
+            bind:value={f.data.points.max_value}
+          />
+        </div>
+        <div class="col-span-5">
+          <!-- svelte-ignore a11y-label-has-associated-control -->
+          <label class="text-xs">Points percentage</label>
+          <Input
+            type="number"
+            placeholder="Percentage"
+            bind:value={f.data.points.percent}
+          />
+        </div>
       </div>
       {#if index + 1 != detailed_odds.length}
         <Separator />

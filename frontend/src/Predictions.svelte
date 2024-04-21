@@ -210,7 +210,7 @@
           {/if}
         </div>
       </Card.Content>
-      {#if prediction && prediction_made == undefined}
+      {#if prediction && prediction_made == null || (prediction_made !== null && typeof prediction_made.placed_bet == 'string')}
         <Card.Footer class="flex flex-col">
           {#if outcome}
             <p class="m-2">
@@ -241,7 +241,7 @@
             </p>
           </div>
         </Card.Footer>
-      {:else if prediction && prediction_made}
+      {:else if prediction && prediction_made && typeof prediction_made.placed_bet !== 'string'}
         <Card.Footer class="flex flex-col">
           Bet placed! Outcome: {prediction.outcomes.find(
             (a) => a.id == prediction_made?.placed_bet.Some.outcome_id,

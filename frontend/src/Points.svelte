@@ -19,10 +19,11 @@
     VisBulletLegend,
     VisAxis,
   } from "@unovis/svelte";
-  import { get, writable } from "svelte/store";
+  import { writable } from "svelte/store";
   import * as Select from "$lib/components/ui/select";
   import type { Selected } from "bits-ui";
   import { get_timeline, streamers, type Streamer } from "./common";
+  let margin = {top: 50};
 
   let streamers_name: Streamer[] = [];
   let selected_streamers: Streamer[] = [];
@@ -251,8 +252,8 @@
             </Popover.Content>
           </Popover.Root>
         </div>
-        <VisXYContainer data={timeline} class="mt-4">
-          <VisTooltip />
+        <VisXYContainer data={timeline} class="mt-4" {margin} height={500}>
+          <VisTooltip horizontalShift={50} verticalShift={50} verticalPlacement="top" />
           <VisLine {x} {y} curveType="linear" lineWidth={3} />
           <VisAxis
             type="x"
