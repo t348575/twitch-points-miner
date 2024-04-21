@@ -1,8 +1,6 @@
 name: Node.js CI
 
 on:
-  push:
-    branches: [ "master" ]
   pull_request:
     branches: [ "master" ]
 defaults:
@@ -11,17 +9,12 @@ defaults:
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node-version: [21.x]
-
     steps:
     - uses: actions/checkout@v3
-    - name: Use Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v3
+    - uses: oven-sh/setup-bun@v1
       with:
-        node-version: ${{ matrix.node-version }}
-    - run: npm ci
+        bun-version: latest
+    - run: bun install
       working-directory: frontend
-    - run: npm run build
+    - run: bun run build
       working-directory: frontend

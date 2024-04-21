@@ -8,12 +8,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+    - uses: actions/checkout@v3
     - uses: SebRollen/toml-action@v1.2.0
       id: read_version
       with:
         file: 'Cargo.toml'
         field: 'package.version'
-    - uses: actions/checkout@v3
     - name: Build the Docker image
       run: docker build . --file Dockerfile --tag t348575/twitch-points-miner:${{ steps.read_version.outputs.value }}
     - name: Tag latest
