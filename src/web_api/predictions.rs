@@ -133,6 +133,7 @@ async fn make_prediction(
             *payload.points.as_ref().unwrap(),
             &token,
             simulate,
+            &s.info.channel_name,
             #[cfg(feature = "analytics")]
             (analytics, &s_id, &streamer),
         )
@@ -148,6 +149,7 @@ async fn make_prediction(
                     p,
                     &token,
                     simulate,
+                    &s.info.channel_name,
                     #[cfg(feature = "analytics")]
                     (analytics, &s_id, &streamer),
                 )
@@ -167,9 +169,13 @@ async fn place_bet(
     points: u32,
     token: &Token,
     simulate: bool,
+    streamer_name: &str,
     #[cfg(feature = "analytics")] analytics: (Arc<crate::analytics::AnalyticsWrapper>, &str, &str),
 ) -> Result<(), ApiError> {
-    info!("Prediction {} with {} points", event_id, points);
+    info!(
+        "{}: predicting {}, with points {}",
+        streamer_name, event_id, points
+    );
     gql::make_prediction(
         points,
         &event_id,

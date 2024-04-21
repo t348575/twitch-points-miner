@@ -6,7 +6,8 @@ use color_eyre::eyre::{eyre, Context, Result};
 use tokio::sync::{mpsc, RwLock};
 use tokio::{fs, spawn};
 use tracing::info;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::{EnvFilter, Layer, Registry};
 
 #[cfg(feature = "web_api")]
 mod web_api;
@@ -36,6 +37,9 @@ struct Args {
     /// Token file
     #[arg(short, long, default_value_t = String::from("tokens.json"))]
     token: String,
+    /// Log to file
+    #[arg(short, long, default_value_t = false)]
+    log_to_file: bool,
     /// Enable analytics, enabled by default
     #[cfg(feature = "analytics")]
     #[arg(long, default_value_t = true)]
@@ -45,16 +49,33 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
-    if let Ok(level) = std::env::var("LOG") {
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                EnvFilter::new(&format!("twitch_points_miner={level}"))
-                    .add_directive(format!("tower_http::trace={level}").parse()?),
-            )
-            .init();
-    }
-
     let args = Args::parse();
+    if let Ok(level) = std::env::var("LOG") {
+        let stdout_log = tracing_subscriber::fmt::layer().with_filter(
+            EnvFilter::new(&format!("twitch_points_miner={level}"))
+                .add_directive(format!("tower_http::trace={level}").parse()?),
+        );
+        let subscriber = Registry::default().with(stdout_log);
+
+        let log_file = if args.log_to_file {
+            let file = std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open("twitch-points-miner.log")?;
+            let log_file = tracing_subscriber::fmt::layer()
+                .with_writer(file)
+                .with_filter(
+                    EnvFilter::new(&format!("twitch_points_miner={level}"))
+                        .add_directive(format!("tower_http::trace={level}").parse()?),
+                );
+            Some(log_file)
+        } else {
+            None
+        };
+
+        let subscriber = subscriber.with(log_file);
+        tracing::subscriber::set_global_default(subscriber)?;
+    }
 
     if !Path::new(&args.token).exists() {
         info!("Starting login sequence");

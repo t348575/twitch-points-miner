@@ -169,6 +169,13 @@ pub async fn make_prediction(
     if !res.status().is_success() {
         return Err(eyre!("Failed to place prediction"));
     }
+
+    let mut res = res.json::<serde_json::Value>().await?;
+    let res = traverse_json(&mut res, ".data.makePrediction.error").unwrap();
+    if !res.is_null() {
+        tracing::error!("Failed to make prediction: {:#?}", res);
+        return Err(eyre!("Failed to make prediction: {:#?}", res));
+    }
     Ok(())
 }
 

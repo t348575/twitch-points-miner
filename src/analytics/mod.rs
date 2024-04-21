@@ -148,13 +148,20 @@ impl Analytics {
         }
     }
 
-    pub fn create_prediction(&mut self, prediction: &Prediction) -> Result<(), AnalyticsError> {
-        diesel::insert_into(schema::predictions::table)
+    pub fn upsert_prediction(&mut self, prediction: &Prediction) -> Result<(), AnalyticsError> {
+        let res = diesel::insert_into(schema::predictions::table)
             .values(prediction)
-            .execute(&mut self.conn)
-            .map_err(|err| {
-                AnalyticsError::from_diesel_error(err, format!("Create prediction {prediction:?}"))
-            })?;
+            .execute(&mut self.conn);
+
+        if let Err(diesel::result::Error::DatabaseError(kind, _)) = res {
+            if let DatabaseErrorKind::UniqueViolation = kind {
+                return Ok(());
+            }
+        }
+
+        res.map_err(|err| {
+            AnalyticsError::from_diesel_error(err, format!("Create prediction {prediction:?}"))
+        })?;
         Ok(())
     }
 

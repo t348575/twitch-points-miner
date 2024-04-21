@@ -1,17 +1,25 @@
-FROM node:21-bookworm-slim as frontend
-RUN mkdir /dist
-COPY frontend /
-RUN npm i
-RUN npm run build
+FROM oven/bun:slim as frontend
+WORKDIR /frontend
+COPY frontend /frontend
+RUN bun install
+RUN bun run build
 
-FROM clux/muslrust as builder
+FROM t348575/muslrust-chef:1.77.1-stable as chef
 WORKDIR /app
-RUN apt update && apt install clang wget -y
-RUN wget https://github.com/rui314/mold/releases/download/v2.30.0/mold-2.30.0-x86_64-linux.tar.gz
-RUN tar -xvzf mold-2.30.0-x86_64-linux.tar.gz
-RUN cp mold-2.30.0-x86_64-linux/bin/mold /usr/local/bin
+
+FROM chef as planner
+ADD src src
+ADD migrations migrations 
+COPY ["Cargo.toml", "Cargo.lock", "diesel.toml", "."]
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef as builder
+COPY --from=planner /app/recipe.json recipe.json
 ARG RUSTFLAGS='-C strip=symbols -C linker=clang -C link-arg=-fuse-ld=/usr/local/bin/mold'
-COPY . .
+RUN RUSTFLAGS="$RUSTFLAGS" cargo chef cook --release --recipe-path recipe.json --features web_api,analytics
+ADD src src
+ADD migrations migrations 
+COPY ["Cargo.toml", "Cargo.lock", "diesel.toml", "."]
 RUN RUSTFLAGS="$RUSTFLAGS" cargo build --release --target x86_64-unknown-linux-musl --features web_api,analytics
 
 FROM busybox AS runtime
