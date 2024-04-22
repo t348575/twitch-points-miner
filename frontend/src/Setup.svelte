@@ -33,6 +33,7 @@
   import Config from "./Config.svelte";
   import type { components } from "./api";
   import WatchPriority from "./WatchPriority.svelte";
+  import { ScrollArea } from "$lib/components/ui/scroll-area";
 
   let data = writable<Streamer[]>([]);
 
@@ -137,8 +138,7 @@
       config_component.set_filters_strategy({
         _type: "Specific",
         config: {
-          filters: entry.data.filters,
-          strategy: entry.data.strategy,
+          prediction: entry.data.prediction
         },
       });
     }
@@ -392,7 +392,7 @@
   </div>
 
   <Dialog.Root bind:open={config_dialog}>
-    <Dialog.Content class="lg:!min-w-[50%] md:!min-w-[100%]">
+    <Dialog.Content class="lg:!min-w-[50%] md:!min-w-[100%] mt-2 !max-h-[98%]">
       <Dialog.Header>
         <Dialog.Title class="mb-4">
           {#if view_edit}
@@ -436,49 +436,53 @@
 
   <Dialog.Root bind:open={preset_dialog}>
     <Dialog.Content class="lg:!min-w-[50%] md:!min-w-[100%]">
-      <Dialog.Header>
-        <Dialog.Title class="mb-4">Preset config</Dialog.Title>
-      </Dialog.Header>
-      <div class="flex flex-col items-center">
-        {#if view_edit}
-          <Select.Root bind:selected={preset}>
-            <Select.Trigger class="my-2 max-w-xs">
-              <Select.Value placeholder="Preset" />
-            </Select.Trigger>
-            <Select.Content>
-              {#each preset_list as p}
-                <Select.Item value={p.value}>{p.label}</Select.Item>
-              {/each}
-            </Select.Content>
-          </Select.Root>
-          {#if preset.value != undefined}
-            <Config
-              bind:filters
-              bind:strategy
-              bind:this={config_component}
-              preset_mode={true}
-            />
-          {/if}
-        {:else}
-          {#if add_streamer_alert}
-            <ErrorAlert message={error_message} />
-          {/if}
-          <Input
-            type="text"
-            bind:value={preset_name}
-            placeholder="Preset name"
-          />
-          <Config
-            bind:filters
-            bind:strategy
-            bind:this={config_component}
-            preset_mode={true}
-          />
-        {/if}
-        <Button class="mt-4 max-w-24" on:click={save_preset}>
-          Save preset
-        </Button>
-      </div>
+        <Dialog.Header>
+          <Dialog.Title>Preset config</Dialog.Title>
+        </Dialog.Header>
+        <div class ="flex flex-col items-center !max-h-[90vh] !min-h-[10vh]">
+          <ScrollArea class="!max-h-[90vh] !min-h-[10vh] w-full">
+            <div class="flex flex-col items-center">
+              {#if view_edit}
+                <Select.Root bind:selected={preset}>
+                  <Select.Trigger class="my-2 max-w-xs">
+                    <Select.Value placeholder="Preset" />
+                  </Select.Trigger>
+                  <Select.Content>
+                    {#each preset_list as p}
+                      <Select.Item value={p.value}>{p.label}</Select.Item>
+                    {/each}
+                  </Select.Content>
+                </Select.Root>
+                {#if preset.value != undefined}
+                  <Config
+                    bind:filters
+                    bind:strategy
+                    bind:this={config_component}
+                    preset_mode={true}
+                  />
+                {/if}
+              {:else}
+                {#if add_streamer_alert}
+                  <ErrorAlert message={error_message} />
+                {/if}
+                <Input
+                  type="text"
+                  bind:value={preset_name}
+                  placeholder="Preset name"
+                />
+                <Config
+                  bind:filters
+                  bind:strategy
+                  bind:this={config_component}
+                  preset_mode={true}
+                />
+              {/if}
+            </div>
+          </ScrollArea>
+          <Button class="mt-4 max-w-24" on:click={save_preset}>
+            Save preset
+          </Button>
+        </div>
     </Dialog.Content>
   </Dialog.Root>
 

@@ -372,6 +372,10 @@ export interface components {
         PredictionBetWrapper: "None" | {
             Some: components["schemas"]["PredictionBet"];
         };
+        PredictionConfig: {
+            filters: components["schemas"]["Filter"][];
+            strategy: components["schemas"]["Strategy"];
+        };
         PubSub: {
             configs: {
                 [key: string]: components["schemas"]["StreamerConfigRefWrapper"] | undefined;
@@ -387,8 +391,8 @@ export interface components {
             detailed: components["schemas"]["Detailed"];
         };
         StreamerConfig: {
-            filters: components["schemas"]["Filter"][];
-            strategy: components["schemas"]["Strategy"];
+            follow_raid: boolean;
+            prediction: components["schemas"]["PredictionConfig"];
         };
         StreamerConfigRefWrapper: {
             _type: components["schemas"]["ConfigTypeRef"];
