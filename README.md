@@ -5,7 +5,7 @@ A very lightweight twitch points miner, using only a few MB of ram, inspired by 
 ![Landing page](assets/tpm-ui-landing.png "Web UI")
 
 ## Features
-* Web UI to interact with the app, and change configurations at runtime [screenshots](#Web UI screenshots)
+* Web UI to interact with the app, and change configurations at runtime [screenshots](#Web-UI-screenshots)
 * Auto place bets on predictions
 * Watch stream to collect view points
 * Claim view point bonuses

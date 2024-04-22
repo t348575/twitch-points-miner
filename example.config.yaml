@@ -34,11 +34,11 @@ streamers:
             max_value: 5000
             percent: 5.0
         default:
-        max_percentage: 55.0
-        min_percentage: 45.0
-        points:
-          max_value: 100000
-          percent: 25.0
+          max_percentage: 55.0
+          min_percentage: 45.0
+          points:
+            max_value: 100000
+            percent: 25.0
       filters:
       # wait for half the prediction time to finish
       - !DelayPercentage 50.0
