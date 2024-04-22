@@ -76,7 +76,7 @@ impl Clone for PubSub {
     fn clone(&self) -> Self {
         Self {
             streamers: self.streamers.clone(),
-            simulate: self.simulate.clone(),
+            simulate: self.simulate,
             token: self.token.clone(),
             spade_url: self.spade_url.clone(),
             user_id: self.user_id.clone(),
@@ -353,13 +353,12 @@ impl PubSub {
             info!("Prediction {} ended", event.id);
             #[cfg(feature = "analytics")]
             {
-                if self
+                if !self
                     .streamers
                     .get_mut(&streamer)
                     .unwrap()
                     .predictions
-                    .get(event.id.as_str())
-                    .is_none()
+                    .contains_key(event.id.as_str())
                 {
                     return Ok(());
                 }
@@ -584,7 +583,7 @@ pub async fn prediction_logic(
 
     let prediction = prediction.unwrap();
     for filter in &c.config.prediction.filters {
-        if !filter_matches(&prediction.0, &filter, &streamer).context("Checking filter")? {
+        if !filter_matches(&prediction.0, filter, streamer).context("Checking filter")? {
             info!("Filter matches {:#?}", filter);
             return Ok(None);
         }
@@ -618,23 +617,17 @@ pub async fn prediction_logic(
                 debug!("Odds for {}: {}", prediction.0.outcomes[idx].id, p);
 
                 let empty_vec = Vec::new();
-                let points = s
-                    .detailed
-                    .as_ref()
-                    .unwrap_or(&empty_vec)
-                    .into_iter()
-                    .filter(|x| -> bool {
-                        debug!("Checking config {x:#?}");
-                        let does_match = match x._type {
-                            strategy::OddsComparisonType::Le => p <= x.threshold,
-                            strategy::OddsComparisonType::Ge => p >= x.threshold,
-                        };
-                        if does_match && rng.gen_bool(x.attempt_rate) {
-                            return true;
-                        }
-                        false
-                    })
-                    .next();
+                let points = s.detailed.as_ref().unwrap_or(&empty_vec).iter().find(|x| {
+                    debug!("Checking config {x:#?}");
+                    let does_match = match x._type {
+                        strategy::OddsComparisonType::Le => p <= x.threshold,
+                        strategy::OddsComparisonType::Ge => p >= x.threshold,
+                    };
+                    if does_match && rng.gen_bool(x.attempt_rate) {
+                        return true;
+                    }
+                    false
+                });
 
                 match points {
                     Some(s) => {
@@ -692,7 +685,7 @@ async fn view_points(pubsub: Arc<RwLock<PubSub>>, events_rx: Receiver<Events>) {
             )
         };
 
-        if streamers.len() == 0 {
+        if streamers.is_empty() {
             debug!("No streamer found");
             sleep(Duration::from_secs(60)).await;
             return Ok(());
@@ -793,7 +786,7 @@ async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>) -> Result<()> {
             return Ok(());
         }
 
-        let points = gql::get_channel_points(&channel_names, &access_token).await?;
+        let points = gql::get_channel_points(&channel_names, access_token).await?;
         {
             #[cfg(feature = "analytics")]
             let mut points_value;
@@ -812,7 +805,7 @@ async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>) -> Result<()> {
                     if let Some(claim_id) = &points[idx].1 {
                         info!("Claiming community points bonus {}", s.info.channel_name);
                         let claimed_points =
-                            gql::claim_points(id.as_str(), &claim_id, access_token).await?;
+                            gql::claim_points(id.as_str(), claim_id, access_token).await?;
                         #[cfg(feature = "analytics")]
                         {
                             points_value = s.points;

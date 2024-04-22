@@ -45,7 +45,7 @@ pub async fn ping_loop(tx: Sender<String>) -> Result<()> {
     let mut interval = interval(std::time::Duration::from_secs(60));
     let ping = json!({"type": "PING"}).to_string();
     loop {
-        if let Err(_) = tx.send_async(ping.clone()).await {
+        if tx.send_async(ping.clone()).await.is_err() {
             break;
         }
         interval.tick().await;

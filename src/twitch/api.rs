@@ -30,7 +30,7 @@ pub async fn get_spade_url(streamer: &str) -> Result<String> {
                         .send()
                         .await?;
                     match res.text().await?.split_once(r#""spade_url":""#) {
-                        Some((_, after)) => match after.split_once(r#"""#) {
+                        Some((_, after)) => match after.split_once('"') {
                             Some((url, _)) => Ok(url.to_string()),
                             None => Err(eyre!(r#"Failed to get spade url: ""#)),
                         },

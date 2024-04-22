@@ -54,7 +54,7 @@ async fn main() -> Result<()> {
     let log_level = std::env::var("LOG").unwrap_or("warn".to_owned());
     let tracing_opts = tracing_subscriber::registry()
         .with(
-            EnvFilter::new(&format!("twitch_points_miner={log_level}"))
+            EnvFilter::new(format!("twitch_points_miner={log_level}"))
                 .add_directive(format!("tower_http::trace={log_level}").parse()?),
         )
         .with(
@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
     .context("Parsing config file")?;
     info!("Parsed config file");
 
-    if c.streamers.len() == 0 {
+    if c.streamers.is_empty() {
         return Err(eyre!("No streamers in config file"));
     }
 
@@ -132,7 +132,7 @@ async fn main() -> Result<()> {
         Arc::new(analytics::AnalyticsWrapper(tokio::sync::Mutex::new(None)))
     };
 
-    let channels = channels.into_iter().filter_map(|x| x).collect::<Vec<_>>();
+    let channels = channels.into_iter().flatten().collect::<Vec<_>>();
     let points = twitch::gql::get_channel_points(
         &channels
             .iter()

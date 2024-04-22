@@ -6,6 +6,8 @@ use axum::{
     routing::{delete, get, put},
     Extension, Json, Router,
 };
+
+#[cfg(feature = "analytics")]
 use color_eyre::eyre::Context;
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -54,7 +56,7 @@ pub enum StreamerError {
 }
 
 impl WebApiError for StreamerError {
-    fn into_response(&self) -> axum::response::Response {
+    fn make_response(&self) -> axum::response::Response {
         use StreamerError::*;
         let status_code = match self {
             StreamerAlreadyMined => StatusCode::CONFLICT,
@@ -136,7 +138,7 @@ async fn mine_streamer(
     let res = gql::streamer_metadata(&[&channel_name], &token.access_token)
         .await
         .map_err(ApiError::twitch_api_error)?;
-    if res.len() == 0 || (res.len() > 0 && res[0].is_none()) {
+    if res.is_empty() || (!res.is_empty() && res[0].is_none()) {
         return Err(ApiError::StreamerDoesNotExist);
     }
 
@@ -159,7 +161,7 @@ async fn mine_streamer(
             .await
             .map_err(ApiError::twitch_api_error)?[0]
             .0;
-        let active_predictions = gql::channel_points_context(&[channel_name], &access_token)
+        let active_predictions = gql::channel_points_context(&[channel_name], access_token)
             .await
             .map_err(ApiError::twitch_api_error)?[0]
             .clone();

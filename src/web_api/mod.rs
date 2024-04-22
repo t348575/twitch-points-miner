@@ -169,7 +169,7 @@ enum ApiError {
 }
 
 trait WebApiError: std::fmt::Debug + Send {
-    fn into_response(&self) -> axum::response::Response;
+    fn make_response(&self) -> axum::response::Response;
 }
 
 impl From<chrono::ParseError> for ApiError {
@@ -204,7 +204,7 @@ impl IntoResponse for ApiError {
             ApiError::InternalError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             #[cfg(feature = "analytics")]
             ApiError::AnalyticsError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            ApiError::SubError(s) => return s.into_response(),
+            ApiError::SubError(s) => return s.make_response(),
         };
 
         (status_code, self.to_string()).into_response()

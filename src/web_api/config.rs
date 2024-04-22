@@ -61,7 +61,7 @@ pub enum ConfigError {
 }
 
 impl WebApiError for ConfigError {
-    fn into_response(&self) -> axum::response::Response {
+    fn make_response(&self) -> axum::response::Response {
         use ConfigError::*;
         let status_code = match self {
             PresetConfigNameEqualsStreamerName | PresetConfigDoesNotExist => {
@@ -276,7 +276,7 @@ impl PubSub {
         match config {
             ConfigType::Preset(name) => match self.configs.get(name) {
                 Some(c) => Ok(c.clone()),
-                None => return sub_error!(ConfigError::PresetConfigDoesNotExist),
+                None => sub_error!(ConfigError::PresetConfigDoesNotExist),
             },
             ConfigType::Specific(s) => {
                 let mut default = Config::default();

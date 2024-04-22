@@ -131,9 +131,9 @@ pub fn from_sql<T: DeserializeOwned>(
     Ok(serde_json::from_str(&s)?)
 }
 
-pub fn to_sql<'b, T: Serialize>(
+pub fn to_sql<T: Serialize>(
     data: &T,
-    out: &mut diesel::serialize::Output<'b, '_, Sqlite>,
+    out: &mut diesel::serialize::Output<'_, '_, Sqlite>,
 ) -> diesel::serialize::Result {
     out.set_value(serde_json::to_string(&data)?);
     Ok(IsNull::No)

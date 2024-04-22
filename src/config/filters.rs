@@ -20,16 +20,12 @@ pub fn filter_matches(prediction: &Event, filter: &Filter, _: &StreamerState) ->
         }
         Filter::DelaySeconds(d) => {
             let created_at: DateTime<Local> =
-                DateTime::parse_from_rfc3339(prediction.created_at.as_str())?
-                    .try_into()
-                    .unwrap();
+                DateTime::parse_from_rfc3339(prediction.created_at.as_str())?.into();
             (chrono::Local::now() - created_at).num_seconds() as u32 >= *d
         }
         Filter::DelayPercentage(d) => {
             let created_at: DateTime<Local> =
-                DateTime::parse_from_rfc3339(prediction.created_at.as_str())?
-                    .try_into()
-                    .unwrap();
+                DateTime::parse_from_rfc3339(prediction.created_at.as_str())?.into();
             let d = prediction.prediction_window_seconds as f64 * (d / 100.0);
             (chrono::Local::now() - created_at).num_seconds() as f64 >= d
         }

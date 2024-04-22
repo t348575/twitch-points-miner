@@ -70,7 +70,7 @@ mod defaults {
     pub const fn _detailed_high_threshold_default() -> f64 { 60.0 }
 }
 
-impl<'v_a, 'a> ::validator::ValidateNested<'v_a> for Strategy {
+impl<'v_a> ::validator::ValidateNested<'v_a> for Strategy {
     type Args = ();
     fn validate_nested(
         &self,

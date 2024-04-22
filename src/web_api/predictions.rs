@@ -62,7 +62,7 @@ pub enum PredictionError {
 }
 
 impl WebApiError for PredictionError {
-    fn into_response(&self) -> axum::response::Response {
+    fn make_response(&self) -> axum::response::Response {
         use PredictionError::*;
         let status_code = match self {
             OutcomeNotFound | PredictionNotFound => StatusCode::BAD_REQUEST,
@@ -122,7 +122,7 @@ async fn make_prediction(
     }
 
     let (event, _) = prediction.unwrap();
-    if let None = event.outcomes.iter().find(|o| o.id == payload.outcome_id) {
+    if !event.outcomes.iter().any(|o| o.id == payload.outcome_id) {
         return sub_error!(PredictionError::OutcomeNotFound);
     }
 
