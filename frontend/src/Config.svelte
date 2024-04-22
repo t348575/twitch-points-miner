@@ -49,6 +49,7 @@
     label: string;
     data: components["schemas"]["StreamerConfig"];
   }[] = [];
+  let follow_raid: boolean = true;
 
   function selected_strategy_change(v: any) {
     strategy_type = v;
@@ -61,11 +62,12 @@
     config: components["schemas"]["StreamerConfigRefWrapper"],
   ) {
     if (typeof config._type === "string") {
+      follow_raid = config.config.follow_raid;
       strategy = SPECIFIC_STRATEGY;
       strategy_type = strategy_types.find(
-        (a) => a.value == Object.keys(config.config.strategy)[0],
+        (a) => a.value == Object.keys(config.config.prediction.strategy)[0],
       );
-      filters = config.config.filters.map((a) => {
+      filters = config.config.prediction.filters.map((a) => {
         const key = Object.keys(a)[0];
         return {
           value: key,
@@ -77,7 +79,7 @@
       switch (strategy_type.value) {
         case "detailed": {
           strategy_props = {
-            detailed_odds: config.config.strategy["detailed"].detailed?.map(
+            detailed_odds: config.config.prediction.strategy["detailed"].detailed?.map(
               (x) => ({
                 data: detailed_strategy_stringify(x),
                 _type: DETAILED_STRATEGY_ODDS_COMPARISON_TYPES.find(
@@ -87,7 +89,7 @@
               }),
             ),
             default_odds: detailed_strategy_stringify(
-              config.config.strategy["detailed"].default,
+              config.config.prediction.strategy["detailed"].default,
             ),
           };
           break;
@@ -145,9 +147,12 @@
 
       return {
         Specific: {
-          strategy: data,
-          // @ts-ignore
-          filters: filters.map((a) => ({ [a.value]: parseFloat(a.quantity) })),
+          follow_raid,
+          prediction: {
+            strategy: data,
+            // @ts-ignore
+            filters: filters.map((a) => ({ [a.value]: parseFloat(a.quantity) })),
+          }
         },
       };
     }
@@ -232,7 +237,7 @@
               <!-- svelte-ignore a11y-label-has-associated-control -->
               <label class="text-xs">Filter type</label>
               <Select.Root bind:selected={f}>
-                <Select.Trigger>
+                <Select.Trigger class="w-48">
                   <Select.Value placeholder="Filter type" />
                 </Select.Trigger>
                 <Select.Content>

@@ -1,10 +1,8 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use color_eyre::{eyre::Context, Result};
-use tokio::{
-    sync::mpsc::Sender,
-    time::{interval, sleep},
-};
+use flume::Sender;
+use tokio::time::{interval, sleep};
 use tracing::{debug, error};
 use twitch_api::types::UserId;
 
@@ -35,7 +33,7 @@ pub async fn run(
         channels: &[(UserId, StreamerInfo)],
     ) -> Result<()> {
         let mut channels_status: HashMap<UserId, bool> =
-            channels.into_iter().map(|x| (x.0.clone(), false)).collect();
+            channels.iter().map(|x| (x.0.clone(), false)).collect();
 
         let channel_names = channels
             .iter()
@@ -49,20 +47,19 @@ pub async fn run(
                 .await
                 .context("Live channels")?
                 .drain(..)
-                .filter(|x| x.is_some())
-                .map(|x| x.unwrap())
+                .flatten()
                 .collect::<Vec<_>>();
 
             let mut get_spade_using = String::new();
             for (idx, (user_id, info)) in live_channels.into_iter().enumerate() {
                 if info.broadcast_id.is_some() {
-                    get_spade_using = channels[idx].1.channel_name.clone();
+                    get_spade_using.clone_from(&channels[idx].1.channel_name);
                 }
 
                 if channels_status[&user_id] != info.broadcast_id.is_some() {
                     *channels_status.get_mut(&user_id).unwrap() = info.broadcast_id.is_some();
                     events_tx
-                        .send(Events::Live {
+                        .send_async(Events::Live {
                             channel_id: user_id.clone(),
                             broadcast_id: info.broadcast_id,
                         })
@@ -71,9 +68,9 @@ pub async fn run(
                 }
             }
 
-            if get_spade_using.len() > 0 && count == 10 {
+            if !get_spade_using.is_empty() && count == 10 {
                 events_tx
-                    .send(Events::SpadeUpdate(
+                    .send_async(Events::SpadeUpdate(
                         api::get_spade_url(&get_spade_using).await?,
                     ))
                     .await?;

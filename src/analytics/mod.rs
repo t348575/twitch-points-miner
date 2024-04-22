@@ -67,10 +67,10 @@ pub struct Analytics {
 
 impl Analytics {
     pub fn new(url: &str) -> Result<Analytics, AnalyticsError> {
-        let mut conn = SqliteConnection::establish(&url)?;
+        let mut conn = SqliteConnection::establish(url)?;
         _ = conn
             .run_pending_migrations(MIGRATIONS)
-            .map_err(|x| AnalyticsError::DbInit(x));
+            .map_err(AnalyticsError::DbInit);
         Ok(Analytics { conn })
     }
 
@@ -81,10 +81,10 @@ impl Analytics {
                 name: name.clone(),
             })
             .execute(&mut self.conn);
-        if let Err(diesel::result::Error::DatabaseError(kind, _)) = res {
-            if let DatabaseErrorKind::UniqueViolation = kind {
-                return Ok(false);
-            }
+        if let Err(diesel::result::Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) =
+            res
+        {
+            return Ok(false);
         }
         res.map_err(|err| {
             AnalyticsError::from_diesel_error(err, format!("Upsert streamer {name}"))
@@ -153,10 +153,10 @@ impl Analytics {
             .values(prediction)
             .execute(&mut self.conn);
 
-        if let Err(diesel::result::Error::DatabaseError(kind, _)) = res {
-            if let DatabaseErrorKind::UniqueViolation = kind {
-                return Ok(());
-            }
+        if let Err(diesel::result::Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) =
+            res
+        {
+            return Ok(());
         }
 
         res.map_err(|err| {

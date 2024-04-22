@@ -9,6 +9,7 @@ use color_eyre::{
     eyre::{eyre, Context, ContextCompat},
     Result,
 };
+use flume::{unbounded, Receiver, Sender};
 use futures::StreamExt;
 use indexmap::IndexMap;
 use rand::{
@@ -18,14 +19,7 @@ use rand::{
 use serde::Serialize;
 #[cfg(feature = "web_api")]
 use tokio::task::JoinHandle;
-use tokio::{
-    spawn,
-    sync::{
-        mpsc::{self, Receiver, Sender},
-        RwLock,
-    },
-    time::sleep,
-};
+use tokio::{spawn, sync::RwLock, time::sleep};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
 use twitch_api::{
@@ -33,6 +27,7 @@ use twitch_api::{
         community_points::CommunityPointsUserV1,
         listen_command,
         predictions::{Event, PredictionsChannelV1},
+        raid::{Raid, RaidReply},
         unlisten_command, Response, TopicData, Topics,
     },
     types::UserId,
@@ -81,7 +76,7 @@ impl Clone for PubSub {
     fn clone(&self) -> Self {
         Self {
             streamers: self.streamers.clone(),
-            simulate: self.simulate.clone(),
+            simulate: self.simulate,
             token: self.token.clone(),
             spade_url: self.spade_url.clone(),
             user_id: self.user_id.clone(),
@@ -214,17 +209,17 @@ impl PubSub {
         let (write, mut read) = ws::connect_twitch_ws(&token.access_token)
             .await
             .context("Could not connect to pub sub")?;
-        let (tx, rx) = mpsc::channel::<String>(128);
+        let (tx, rx) = unbounded::<String>();
 
         spawn(ws::writer(rx, write));
         spawn(ws::ping_loop(tx.clone()));
         spawn(event_listener(
             pubsub.clone(),
-            events_rx,
+            events_rx.clone(),
             tx.clone(),
             token.access_token.clone(),
         ));
-        spawn(view_points(pubsub.clone()));
+        spawn(view_points(pubsub.clone(), events_rx));
         spawn(update_and_claim_points(pubsub.clone()));
 
         info!("Connected to pubsub");
@@ -250,7 +245,7 @@ impl PubSub {
     async fn handle_response(&mut self, data: TopicData) -> Result<()> {
         match data {
             TopicData::PredictionsChannelV1 { topic, reply } => {
-                debug!("Got reply {:#?}", topic);
+                debug!("Got PredictionsChannelV1 {:#?}", topic);
                 let event = reply.data.event;
                 let streamer = UserId::from_str(&event.channel_id)?;
 
@@ -266,7 +261,7 @@ impl PubSub {
                     .context(format!("Handle prediction event: {name}"))?;
             }
             TopicData::CommunityPointsUserV1 { topic, reply } => {
-                debug!("Got reply {:#?}", topic);
+                debug!("Got CommunityPointsUserV1 {:#?}", topic);
                 let streamer = UserId::from_str(&reply.data.channel_id)?;
 
                 if self.streamers.contains_key(&streamer) {
@@ -274,6 +269,23 @@ impl PubSub {
                     let s = self.streamers.get_mut(&streamer).unwrap();
                     s.points = reply.data.balance.balance as u32;
                     s.last_points_refresh = Instant::now();
+                }
+            }
+            TopicData::Raid { topic, reply } => {
+                debug!("Got Raid {:#?}", topic);
+
+                if let RaidReply::RaidUpdateV2(raid) = *reply {
+                    if let Some(s) = self.streamers.get(&raid.source_id) {
+                        if s.config.0.read().unwrap().config.follow_raid {
+                            info!(
+                                "Joining raid for {} to {}",
+                                s.info.channel_name, raid.target_login
+                            );
+                            gql::join_raid(&raid.id, &self.token.access_token)
+                                .await
+                                .context("Raiding user")?;
+                        }
+                    }
                 }
             }
             _ => {}
@@ -341,13 +353,12 @@ impl PubSub {
             info!("Prediction {} ended", event.id);
             #[cfg(feature = "analytics")]
             {
-                if self
+                if !self
                     .streamers
                     .get_mut(&streamer)
                     .unwrap()
                     .predictions
-                    .get(event.id.as_str())
-                    .is_none()
+                    .contains_key(event.id.as_str())
                 {
                     return Ok(());
                 }
@@ -498,11 +509,11 @@ impl PubSub {
 
 async fn event_listener(
     pubsub: Arc<RwLock<PubSub>>,
-    mut events_rx: Receiver<Events>,
+    events_rx: Receiver<Events>,
     tx: Sender<String>,
     access_token: String,
 ) -> Result<()> {
-    while let Some(events) = events_rx.recv().await {
+    while let Ok(events) = events_rx.recv_async().await {
         let mut writer = pubsub.write().await;
         match events {
             Events::Live {
@@ -520,15 +531,15 @@ async fn event_listener(
 
                     let channel_id = channel_id.as_str().parse()?;
                     let nonce = Alphanumeric.sample_string(&mut rand::thread_rng(), 30);
-                    let topics = &[
+                    let topics = [
                         Topics::PredictionsChannelV1(PredictionsChannelV1 { channel_id }),
                         Topics::CommunityPointsUserV1(CommunityPointsUserV1 { channel_id }),
+                        Topics::Raid(Raid { channel_id }),
                     ];
 
                     let cmds = if s.info.live {
                         topics
                             .into_iter()
-                            .cloned()
                             .map(|x| {
                                 listen_command(&[x], access_token.as_str(), nonce.as_str())
                                     .context("Generate listen command")
@@ -537,7 +548,6 @@ async fn event_listener(
                     } else {
                         topics
                             .into_iter()
-                            .cloned()
                             .map(|x| {
                                 unlisten_command(&[x], nonce.as_str())
                                     .context("Generate unlisten command")
@@ -546,7 +556,7 @@ async fn event_listener(
                     }?;
 
                     for item in cmds {
-                        tx.send(item).await?;
+                        tx.send_async(item).await?;
                     }
                 }
             }
@@ -572,14 +582,14 @@ pub async fn prediction_logic(
         .map_err(|_| eyre!("Streamer config poison error"))?;
 
     let prediction = prediction.unwrap();
-    for filter in &c.config.filters {
-        if !filter_matches(&prediction.0, &filter, &streamer).context("Checking filter")? {
+    for filter in &c.config.prediction.filters {
+        if !filter_matches(&prediction.0, filter, streamer).context("Checking filter")? {
             info!("Filter matches {:#?}", filter);
             return Ok(None);
         }
     }
 
-    match &c.config.strategy {
+    match &c.config.prediction.strategy {
         config::strategy::Strategy::Detailed(s) => {
             if prediction.0.outcomes.len() < 2 {
                 return Ok(None);
@@ -607,23 +617,17 @@ pub async fn prediction_logic(
                 debug!("Odds for {}: {}", prediction.0.outcomes[idx].id, p);
 
                 let empty_vec = Vec::new();
-                let points = s
-                    .detailed
-                    .as_ref()
-                    .unwrap_or(&empty_vec)
-                    .into_iter()
-                    .filter(|x| -> bool {
-                        debug!("Checking config {x:#?}");
-                        let does_match = match x._type {
-                            strategy::OddsComparisonType::Le => p <= x.threshold,
-                            strategy::OddsComparisonType::Ge => p >= x.threshold,
-                        };
-                        if does_match && rng.gen_bool(x.attempt_rate) {
-                            return true;
-                        }
-                        false
-                    })
-                    .next();
+                let points = s.detailed.as_ref().unwrap_or(&empty_vec).iter().find(|x| {
+                    debug!("Checking config {x:#?}");
+                    let does_match = match x._type {
+                        strategy::OddsComparisonType::Le => p <= x.threshold,
+                        strategy::OddsComparisonType::Ge => p >= x.threshold,
+                    };
+                    if does_match && rng.gen_bool(x.attempt_rate) {
+                        return true;
+                    }
+                    false
+                });
 
                 match points {
                     Some(s) => {
@@ -649,9 +653,19 @@ pub async fn prediction_logic(
     Ok(None)
 }
 
-async fn view_points(pubsub: Arc<RwLock<PubSub>>) {
+async fn view_points(pubsub: Arc<RwLock<PubSub>>, events_rx: Receiver<Events>) {
     sleep(Duration::from_secs(5)).await;
-    async fn inner(pubsub: &Arc<RwLock<PubSub>>) -> Result<()> {
+
+    let use_watch_streak = {
+        let reader = pubsub.read().await;
+        reader.config.watch_streak.unwrap_or(true)
+    };
+
+    let mut watch_streak = Vec::new();
+    async fn inner(
+        pubsub: &Arc<RwLock<PubSub>>,
+        watch_streak: &mut Vec<(UserId, i32)>,
+    ) -> Result<()> {
         let (streamers, user_id, user_name, spade_url, access_token, watch_priority) = {
             let reader = pubsub.read().await;
             let streamers = reader
@@ -671,7 +685,7 @@ async fn view_points(pubsub: Arc<RwLock<PubSub>>) {
             )
         };
 
-        if streamers.len() == 0 {
+        if streamers.is_empty() {
             debug!("No streamer found");
             sleep(Duration::from_secs(60)).await;
             return Ok(());
@@ -691,6 +705,17 @@ async fn view_points(pubsub: Arc<RwLock<PubSub>>) {
             }
         }
 
+        // Just to allow the reference to live
+        #[allow(unused_assignments)]
+        let mut streak_entry = None;
+        let mut entry = watch_streak.iter_mut().take(1);
+        if let Some(entry) = entry.next() {
+            entry.1 += 1;
+            let s = pubsub.read().await.streamers.get(&entry.0).unwrap().clone();
+            streak_entry = Some((entry.0.clone(), s));
+            watch_items.insert(0, streak_entry.as_ref().unwrap());
+        }
+
         for (id, streamer) in watch_items.into_iter().take(2) {
             debug!("Watching {}", streamer.info.channel_name);
             api::set_viewership(
@@ -703,16 +728,33 @@ async fn view_points(pubsub: Arc<RwLock<PubSub>>) {
             )
             .await?;
         }
+
+        *watch_streak = watch_streak.drain(..).filter(|x| x.1 < 60).collect();
         Ok(())
     }
 
     loop {
-        if let Err(err) = inner(&pubsub).await {
+        if let Err(err) = inner(&pubsub, &mut watch_streak).await {
             if err.to_string() != "Spade URL not set" {
                 error!("{err}");
             }
         }
-        sleep(Duration::from_secs(30)).await;
+
+        if use_watch_streak {
+            let live = events_rx.drain().filter_map(|x| {
+                if let Events::Live {
+                    channel_id,
+                    broadcast_id: _,
+                } = x
+                {
+                    Some((channel_id, 0))
+                } else {
+                    None
+                }
+            });
+            watch_streak.extend(live);
+        }
+        sleep(Duration::from_secs(10)).await;
     }
 }
 
@@ -744,7 +786,7 @@ async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>) -> Result<()> {
             return Ok(());
         }
 
-        let points = gql::get_channel_points(&channel_names, &access_token).await?;
+        let points = gql::get_channel_points(&channel_names, access_token).await?;
         {
             #[cfg(feature = "analytics")]
             let mut points_value;
@@ -763,7 +805,7 @@ async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>) -> Result<()> {
                     if let Some(claim_id) = &points[idx].1 {
                         info!("Claiming community points bonus {}", s.info.channel_name);
                         let claimed_points =
-                            gql::claim_points(id.as_str(), &claim_id, access_token).await?;
+                            gql::claim_points(id.as_str(), claim_id, access_token).await?;
                         #[cfg(feature = "analytics")]
                         {
                             points_value = s.points;
@@ -806,7 +848,7 @@ async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>) -> Result<()> {
 mod test {
     use std::{collections::HashMap, time::Instant};
 
-    use chrono::Utc;
+    use chrono::Local;
     use color_eyre::Result;
     use twitch_api::{
         pubsub::predictions::{Event, Outcome},
@@ -816,7 +858,7 @@ mod test {
     use crate::{
         config::{
             strategy::{DefaultPrediction, DetailedOdds, Strategy},
-            StreamerConfig,
+            PredictionConfig, StreamerConfig,
         },
         pubsub::prediction_logic,
         types::*,
@@ -851,7 +893,7 @@ mod test {
                     Event {
                         id: "pred-key-1".to_owned(),
                         channel_id: "channel-id-1".to_owned(),
-                        created_at: Timestamp::new(Utc::now().to_rfc3339()).unwrap(),
+                        created_at: Timestamp::new(Local::now().to_rfc3339()).unwrap(),
                         ended_at: None,
                         locked_at: None,
                         outcomes: Vec::new(),
@@ -866,8 +908,11 @@ mod test {
             config: StreamerConfigRefWrapper::new(StreamerConfigRef {
                 _type: ConfigTypeRef::Specific,
                 config: StreamerConfig {
-                    strategy: Strategy::default(),
-                    filters: vec![],
+                    follow_raid: true,
+                    prediction: PredictionConfig {
+                        strategy: Strategy::default(),
+                        filters: vec![],
+                    },
                 },
             }),
             points: 0,
@@ -895,7 +940,7 @@ mod test {
 
         let mut config_ref = streamer.config.0.write().unwrap();
         #[allow(irrefutable_let_patterns)]
-        if let Strategy::Detailed(d) = &mut config_ref.config.strategy {
+        if let Strategy::Detailed(d) = &mut config_ref.config.prediction.strategy {
             d.default = DefaultPrediction {
                 max_percentage: 0.55,
                 min_percentage: 0.45,
@@ -977,7 +1022,7 @@ mod test {
 
         let mut config_ref = streamer.config.0.write().unwrap();
         #[allow(irrefutable_let_patterns)]
-        if let Strategy::Detailed(d) = &mut config_ref.config.strategy {
+        if let Strategy::Detailed(d) = &mut config_ref.config.prediction.strategy {
             d.default = DefaultPrediction {
                 max_percentage: 0.55,
                 min_percentage: 0.45,

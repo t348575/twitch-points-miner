@@ -3,11 +3,11 @@ use std::sync::Arc;
 
 use clap::Parser;
 use color_eyre::eyre::{eyre, Context, Result};
-use tokio::sync::{mpsc, RwLock};
+use flume::unbounded;
+use tokio::sync::RwLock;
 use tokio::{fs, spawn};
 use tracing::info;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::{EnvFilter, Layer, Registry};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[cfg(feature = "web_api")]
 mod web_api;
@@ -50,31 +50,28 @@ struct Args {
 async fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
-    if let Ok(level) = std::env::var("LOG") {
-        let stdout_log = tracing_subscriber::fmt::layer().with_filter(
-            EnvFilter::new(&format!("twitch_points_miner={level}"))
-                .add_directive(format!("tower_http::trace={level}").parse()?),
+
+    let log_level = std::env::var("LOG").unwrap_or("warn".to_owned());
+    let tracing_opts = tracing_subscriber::registry()
+        .with(
+            EnvFilter::new(format!("twitch_points_miner={log_level}"))
+                .add_directive(format!("tower_http::trace={log_level}").parse()?),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .compact(),
         );
-        let subscriber = Registry::default().with(stdout_log);
 
-        let log_file = if args.log_to_file {
-            let file = std::fs::OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open("twitch-points-miner.log")?;
-            let log_file = tracing_subscriber::fmt::layer()
-                .with_writer(file)
-                .with_filter(
-                    EnvFilter::new(&format!("twitch_points_miner={level}"))
-                        .add_directive(format!("tower_http::trace={level}").parse()?),
-                );
-            Some(log_file)
-        } else {
-            None
-        };
+    let file_appender = tracing_appender::rolling::never(".", "twitch-points-miner.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
-        let subscriber = subscriber.with(log_file);
-        tracing::subscriber::set_global_default(subscriber)?;
+    if args.log_to_file {
+        tracing_opts
+            .with(tracing_subscriber::fmt::layer().with_writer(non_blocking))
+            .init();
+    } else {
+        tracing_opts.init();
     }
 
     if !Path::new(&args.token).exists() {
@@ -90,7 +87,7 @@ async fn main() -> Result<()> {
     .context("Parsing config file")?;
     info!("Parsed config file");
 
-    if c.streamers.len() == 0 {
+    if c.streamers.is_empty() {
         return Err(eyre!("No streamers in config file"));
     }
 
@@ -128,12 +125,14 @@ async fn main() -> Result<()> {
 
     #[cfg(feature = "analytics")]
     let analytics = if args.analytics {
-        Arc::new(analytics::AnalyticsWrapper::new(&c.analytics_db)?)
+        Arc::new(analytics::AnalyticsWrapper::new(
+            &c.analytics_db.unwrap_or("analytics.db".to_owned()),
+        )?)
     } else {
         Arc::new(analytics::AnalyticsWrapper(tokio::sync::Mutex::new(None)))
     };
 
-    let channels = channels.into_iter().filter_map(|x| x).collect::<Vec<_>>();
+    let channels = channels.into_iter().flatten().collect::<Vec<_>>();
     let points = twitch::gql::get_channel_points(
         &channels
             .iter()
@@ -172,7 +171,7 @@ async fn main() -> Result<()> {
     .await?;
 
     println!("Everything ok, starting twitch pubsub");
-    let (events_tx, events_rx) = mpsc::channel::<live::Events>(128);
+    let (events_tx, events_rx) = unbounded::<live::Events>();
     let live = spawn(live::run(
         Arc::new(token.clone()),
         events_tx.clone(),

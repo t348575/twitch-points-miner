@@ -61,7 +61,7 @@ enum Token<'a> {
     Eos,
 }
 
-fn consume<'a>(data: &'a str) -> (Token<'a>, &'a str) {
+fn consume(data: &str) -> (Token<'_>, &str) {
     let mut started = false;
     for (idx, char) in data.char_indices() {
         match char {
@@ -102,7 +102,7 @@ fn consume<'a>(data: &'a str) -> (Token<'a>, &'a str) {
     }
 }
 
-fn camel_to_snake_case_json<'a>(value: &'a mut serde_json::Value) {
+fn camel_to_snake_case_json(value: &mut serde_json::Value) {
     if value.is_object() {
         let obj = value.as_object_mut().unwrap();
         let mut to_add = Vec::new();
