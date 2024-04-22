@@ -2,8 +2,10 @@
 
 A very lightweight twitch points miner, using only a few MB of ram, inspired by [Twitch-Channel-Points-Miner-v2](https://github.com/rdavydov/Twitch-Channel-Points-Miner-v2).
 
+![Landing page](assets/tpm-ui-landing.png "Web UI")
+
 ## Features
-* Web UI to interact with the app, and change configurations at runtime
+* Web UI to interact with the app, and change configurations at runtime [screenshots](#Web UI screenshots)
 * Auto place bets on predictions
 * Watch stream to collect view points
 * Claim view point bonuses
@@ -32,7 +34,7 @@ Once it is running and the login flow is complete, CTRL+C then just attach the t
 
 ## Docker compose
 **Note**: You might want to touch all of the attached files first, or docker might create them as directories.
-```
+```yaml
 services:
   twitch-points-miner:
     container_name: twitch-points-miner
@@ -62,3 +64,9 @@ cargo build --release
 ```
 cargo build --release --features web_api,analytics
 ```
+
+## Web UI screenshots
+![Landing page](assets/tpm-ui-landing.png "Web UI")
+![Place predictions](assets/tpm-ui-make-prediction.png "Place predictions manually")
+![Setup page](assets/tpm-ui-setup.png "Setup page")
+![Configuration editor](assets/tpm-ui-edit-config.png "Configuration editor")
