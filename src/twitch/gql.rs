@@ -429,3 +429,42 @@ pub async fn channel_points_context(
         .collect::<Vec<_>>();
     Ok(active_predictions)
 }
+
+pub async fn join_raid(raid_id: &str, access_token: &str) -> Result<()> {
+    #[derive(Serialize, Default, Debug)]
+    struct Variables<'a> {
+        input: Input<'a>,
+    }
+
+    #[derive(Serialize, Default, Debug)]
+    struct Input<'a> {
+        #[serde(rename = "raidID")]
+        raid_id: &'a str,
+    }
+
+    impl<'a> Default for GqlRequest<Variables<'a>> {
+        fn default() -> Self {
+            Self {
+                operation_name: "JoinRaid".to_string(),
+                extensions: json!({
+                    "persistedQuery": {
+                        "version": 1,
+                        "sha256Hash": "c6a332a86d1087fbbb1a8623aa01bd1313d2386e7c63be60fdb2d1901f01a4ae",
+                    }
+                }),
+                variables: Default::default(),
+            }
+        }
+    }
+    let mut claim = GqlRequest::<Variables>::default();
+    claim.variables = Variables {
+        input: Input { raid_id },
+    };
+
+    let res = gql_req(access_token).json(&claim).send().await?;
+
+    if !res.status().is_success() {
+        return Err(eyre!("Failed to claim points"));
+    }
+    Ok(())
+}

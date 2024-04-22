@@ -1,14 +1,11 @@
 use color_eyre::Result;
+use flume::{Receiver, Sender};
 use futures::{
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
 };
 use serde_json::json;
-use tokio::{
-    net::TcpStream,
-    sync::mpsc::{Receiver, Sender},
-    time::interval,
-};
+use tokio::{net::TcpStream, time::interval};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
 use super::{CLIENT_ID, FIREFOX_USER_AGENT};
@@ -37,11 +34,8 @@ pub async fn connect_twitch_ws(
     Ok(socket.split())
 }
 
-pub async fn writer(
-    mut rx: Receiver<String>,
-    mut write: SplitSink<WsStream, Message>,
-) -> Result<()> {
-    while let Some(msg) = rx.recv().await {
+pub async fn writer(rx: Receiver<String>, mut write: SplitSink<WsStream, Message>) -> Result<()> {
+    while let Ok(msg) = rx.recv_async().await {
         write.send(Message::Text(msg)).await?;
     }
     Ok(())
@@ -51,7 +45,7 @@ pub async fn ping_loop(tx: Sender<String>) -> Result<()> {
     let mut interval = interval(std::time::Duration::from_secs(60));
     let ping = json!({"type": "PING"}).to_string();
     loop {
-        if let Err(_) = tx.send(ping.clone()).await {
+        if let Err(_) = tx.send_async(ping.clone()).await {
             break;
         }
         interval.tick().await;

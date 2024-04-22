@@ -3,56 +3,60 @@ watch_priority:
 - streamer_b
 streamers:
   streamer_a: !Specific
-    strategy: !detailed
-      # bets placed when odds >= 90%, 100% of the time
-      detailed:
-      - _type: Ge
-        threshold: 90.0
-        attempt_rate: 100.0
-        points:
-          max_value: 1000
-          percent: 1.0
-      # bets placed when odds <= 10%, 1% of the time
-      - _type: Le
-        threshold: 10.0
-        attempt_rate: 1.0
-        points:
-          max_value: 1000
-          percent: 1.0
-      - _type: Ge
-        threshold: 70.0
-        attempt_rate: 100.0
-        points:
-          max_value: 5000
-          percent: 5.0
-      - _type: Le
-        threshold: 30.0
-        attempt_rate: 3.0
-        points:
-          max_value: 5000
-          percent: 5.0
-      default:
+    follow_raid: true
+    prediction:
+      strategy: !detailed
+        # bets placed when odds >= 90%, 100% of the time
+        detailed:
+        - _type: Ge
+          threshold: 90.0
+          attempt_rate: 100.0
+          points:
+            max_value: 1000
+            percent: 1.0
+        # bets placed when odds <= 10%, 1% of the time
+        - _type: Le
+          threshold: 10.0
+          attempt_rate: 1.0
+          points:
+            max_value: 1000
+            percent: 1.0
+        - _type: Ge
+          threshold: 70.0
+          attempt_rate: 100.0
+          points:
+            max_value: 5000
+            percent: 5.0
+        - _type: Le
+          threshold: 30.0
+          attempt_rate: 3.0
+          points:
+            max_value: 5000
+            percent: 5.0
+        default:
         max_percentage: 55.0
         min_percentage: 45.0
         points:
           max_value: 100000
           percent: 25.0
-    filters:
-    # wait for half the prediction time to finish
-    - !DelayPercentage 50.0
-    # Attempt prediction only if at least 300 people have bet
-    - !TotalUsers 300
+      filters:
+      # wait for half the prediction time to finish
+      - !DelayPercentage 50.0
+      # Attempt prediction only if at least 300 people have bet
+      - !TotalUsers 300
   streamer_b: !Preset small
 presets:
   # a preset configuration that can be reused
   # this particular one only defines a base range
   small:
-    strategy: !detailed
+    follow_raid: false
+    prediction:
+      strategy: !detailed
       default:
         max_percentage: 0.0
         min_percentage: 0.0
         points:
           max_value: 0
           percent: 0.0
-    filters: []
+      filters: []
 analytics_db: /my/custom/path/to/analytics

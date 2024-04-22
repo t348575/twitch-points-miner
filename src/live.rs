@@ -1,10 +1,8 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use color_eyre::{eyre::Context, Result};
-use tokio::{
-    sync::mpsc::Sender,
-    time::{interval, sleep},
-};
+use flume::Sender;
+use tokio::time::{interval, sleep};
 use tracing::{debug, error};
 use twitch_api::types::UserId;
 
@@ -62,7 +60,7 @@ pub async fn run(
                 if channels_status[&user_id] != info.broadcast_id.is_some() {
                     *channels_status.get_mut(&user_id).unwrap() = info.broadcast_id.is_some();
                     events_tx
-                        .send(Events::Live {
+                        .send_async(Events::Live {
                             channel_id: user_id.clone(),
                             broadcast_id: info.broadcast_id,
                         })
@@ -73,7 +71,7 @@ pub async fn run(
 
             if get_spade_using.len() > 0 && count == 10 {
                 events_tx
-                    .send(Events::SpadeUpdate(
+                    .send_async(Events::SpadeUpdate(
                         api::get_spade_url(&get_spade_using).await?,
                     ))
                     .await?;

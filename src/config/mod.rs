@@ -13,9 +13,9 @@ pub struct Config {
     pub watch_priority: Option<Vec<String>>,
     pub streamers: IndexMap<String, ConfigType>,
     pub presets: Option<IndexMap<String, StreamerConfig>>,
+    pub watch_streak: Option<bool>,
     #[cfg(feature = "analytics")]
-    #[serde(default = "defaults::_db_path_default")]
-    pub analytics_db: String,
+    pub analytics_db: Option<String>,
 }
 
 pub trait Normalize {
@@ -25,6 +25,15 @@ pub trait Normalize {
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct StreamerConfig {
+    pub follow_raid: bool,
+    #[validate(nested)]
+    pub prediction: PredictionConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
+#[validate(nested)]
+pub struct PredictionConfig {
     #[validate(nested)]
     pub strategy: Strategy,
     #[validate(length(min = 0))]
@@ -57,7 +66,7 @@ impl Config {
                 }
                 ConfigType::Specific(s) => {
                     s.validate()?;
-                    s.strategy.normalize();
+                    s.prediction.strategy.normalize();
                 }
             }
         }
@@ -68,14 +77,9 @@ impl Config {
                     return Err(eyre!("Preset {key} already in use as a streamer. Preset names cannot be the same as a streamer mentioned in the config"));
                 }
 
-                c.strategy.normalize();
+                c.prediction.strategy.normalize();
             }
         }
         Ok(())
     }
-}
-
-#[rustfmt::skip]
-mod defaults {
-    pub fn _db_path_default() -> String { "analytics.db".to_owned() }
 }

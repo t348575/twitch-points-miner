@@ -18,7 +18,7 @@ use utoipa::{
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::{
-    config::{filters::Filter, strategy::*, StreamerConfig},
+    config::{filters::Filter, strategy::*, PredictionConfig, StreamerConfig},
     pubsub::PubSub,
     twitch::auth::Token,
     types::*,
@@ -73,7 +73,7 @@ pub async fn get_api_server(
         ),
         components(
             schemas(
-                PubSub, StreamerState, StreamerConfigRefWrapper, ConfigTypeRef, StreamerConfig, StreamerInfo, Event,
+                PubSub, StreamerState, StreamerConfigRefWrapper, ConfigTypeRef, StreamerConfig, PredictionConfig, StreamerInfo, Event,
                 Filter, Strategy, UserId, Game, Detailed, Timestamp, DefaultPrediction, DetailedOdds, Points, OddsComparisonType
             ),
         ),

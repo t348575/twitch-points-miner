@@ -1,6 +1,6 @@
 [package]
 name = "twitch-points-miner"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 resolver = "2"
 
@@ -34,6 +34,8 @@ utoipa = { version = "4", features = ["axum_extras", "chrono"], optional = true 
 utoipa-swagger-ui = { version = "6", features = ["axum"], optional = true }
 tower-http = { version = "0.5", features = ["trace", "cors", "fs"], optional = true }
 indexmap = { version = "2.2", features = ["serde"] }
+tracing-appender = "0.2.3"
+flume = "0.11.0"
 
 [features]
 web_api = ["dep:axum", "dep:utoipa", "dep:utoipa-swagger-ui", "twitch_api/utoipa", "dep:tower-http"]
