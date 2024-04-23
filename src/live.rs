@@ -56,8 +56,8 @@ pub async fn run(
                     get_spade_using.clone_from(&channels[idx].1.channel_name);
                 }
 
-                if channels_status[&user_id] != info.broadcast_id.is_some() {
-                    *channels_status.get_mut(&user_id).unwrap() = info.broadcast_id.is_some();
+                if channels_status[&user_id] != info.live {
+                    *channels_status.get_mut(&user_id).unwrap() = info.live;
                     events_tx
                         .send_async(Events::Live {
                             channel_id: user_id.clone(),

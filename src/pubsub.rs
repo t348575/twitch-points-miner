@@ -512,58 +512,71 @@ async fn event_listener(
     events_rx: Receiver<Events>,
     tx: Sender<String>,
     access_token: String,
-) -> Result<()> {
-    while let Ok(events) = events_rx.recv_async().await {
-        let mut writer = pubsub.write().await;
-        match events {
-            Events::Live {
-                channel_id,
-                broadcast_id,
-            } => {
-                if let Some(s) = writer.streamers.get_mut(&channel_id) {
-                    info!(
-                        "Live status of {} is {}",
-                        s.info.channel_name,
-                        broadcast_id.is_some()
-                    );
-                    s.info.live = broadcast_id.is_some();
-                    s.info.broadcast_id = broadcast_id;
+) {
+    async fn inner(
+        pubsub: &Arc<RwLock<PubSub>>,
+        events_rx: &Receiver<Events>,
+        tx: &Sender<String>,
+        access_token: &str,
+    ) -> Result<()> {
+        while let Ok(events) = events_rx.recv_async().await {
+            let mut writer = pubsub.write().await;
+            match events {
+                Events::Live {
+                    channel_id,
+                    broadcast_id,
+                } => {
+                    if let Some(s) = writer.streamers.get_mut(&channel_id) {
+                        info!(
+                            "Live status of {} is {}",
+                            s.info.channel_name,
+                            broadcast_id.is_some()
+                        );
+                        s.info.live = broadcast_id.is_some();
+                        s.info.broadcast_id = broadcast_id;
 
-                    let channel_id = channel_id.as_str().parse()?;
-                    let nonce = Alphanumeric.sample_string(&mut rand::thread_rng(), 30);
-                    let topics = [
-                        Topics::PredictionsChannelV1(PredictionsChannelV1 { channel_id }),
-                        Topics::CommunityPointsUserV1(CommunityPointsUserV1 { channel_id }),
-                        Topics::Raid(Raid { channel_id }),
-                    ];
+                        let channel_id = channel_id.as_str().parse()?;
+                        let nonce = Alphanumeric.sample_string(&mut rand::thread_rng(), 30);
+                        let topics = [
+                            Topics::PredictionsChannelV1(PredictionsChannelV1 { channel_id }),
+                            Topics::CommunityPointsUserV1(CommunityPointsUserV1 { channel_id }),
+                            Topics::Raid(Raid { channel_id }),
+                        ];
 
-                    let cmds = if s.info.live {
-                        topics
-                            .into_iter()
-                            .map(|x| {
-                                listen_command(&[x], access_token.as_str(), nonce.as_str())
-                                    .context("Generate listen command")
-                            })
-                            .collect::<Result<Vec<_>, _>>()
-                    } else {
-                        topics
-                            .into_iter()
-                            .map(|x| {
-                                unlisten_command(&[x], nonce.as_str())
-                                    .context("Generate unlisten command")
-                            })
-                            .collect::<Result<Vec<_>, _>>()
-                    }?;
+                        let cmds = if s.info.live {
+                            topics
+                                .into_iter()
+                                .map(|x| {
+                                    listen_command(&[x], access_token, nonce.as_str())
+                                        .context("Generate listen command")
+                                })
+                                .collect::<Result<Vec<_>, _>>()
+                        } else {
+                            topics
+                                .into_iter()
+                                .map(|x| {
+                                    unlisten_command(&[x], nonce.as_str())
+                                        .context("Generate unlisten command")
+                                })
+                                .collect::<Result<Vec<_>, _>>()
+                        }?;
 
-                    for item in cmds {
-                        tx.send_async(item).await?;
+                        for item in cmds {
+                            tx.send_async(item).await?;
+                        }
                     }
                 }
+                Events::SpadeUpdate(s) => writer.spade_url = Some(s),
             }
-            Events::SpadeUpdate(s) => writer.spade_url = Some(s),
+        }
+        Ok(())
+    }
+
+    loop {
+        if let Err(err) = inner(&pubsub, &events_rx, &tx, &access_token).await {
+            error!("{err:#?}");
         }
     }
-    Ok(())
 }
 
 pub async fn prediction_logic(
