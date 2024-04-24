@@ -61,6 +61,8 @@ pub struct PubSub {
     pub user_id: String,
     pub user_name: String,
     pub configs: HashMap<String, StreamerConfigRefWrapper>,
+    #[serde(skip)]
+    pub gql: gql::Client,
     #[cfg(feature = "web_api")]
     #[serde(skip)]
     pub live_runner: Option<JoinHandle<Result<()>>>,
@@ -90,6 +92,7 @@ impl Clone for PubSub {
             analytics: self.analytics.clone(),
             config: self.config.clone(),
             config_path: self.config_path.clone(),
+            gql: self.gql.clone(),
         }
     }
 }
@@ -105,6 +108,7 @@ impl PubSub {
         simulate: bool,
         token: Token,
         user_info: (String, String),
+        gql: gql::Client,
         #[cfg(feature = "web_api")] live_runner: JoinHandle<Result<()>>,
         #[cfg(feature = "web_api")] events_tx: Sender<Events>,
         #[cfg(feature = "analytics")] analytics: Arc<crate::analytics::AnalyticsWrapper>,
@@ -174,6 +178,7 @@ impl PubSub {
             events_tx,
             #[cfg(feature = "analytics")]
             analytics,
+            gql,
         })
     }
 
@@ -205,6 +210,7 @@ impl PubSub {
         token: Token,
         events_rx: Receiver<Events>,
         pubsub: Arc<RwLock<PubSub>>,
+        gql: gql::Client,
     ) -> Result<()> {
         let (write, mut read) = ws::connect_twitch_ws(&token.access_token)
             .await
@@ -220,7 +226,7 @@ impl PubSub {
             token.access_token.clone(),
         ));
         spawn(view_points(pubsub.clone(), events_rx));
-        spawn(update_and_claim_points(pubsub.clone()));
+        spawn(update_and_claim_points(pubsub.clone(), gql.clone()));
 
         info!("Connected to pubsub");
         while let Some(Ok(msg)) = read.next().await {
@@ -281,9 +287,7 @@ impl PubSub {
                                 "Joining raid for {} to {}",
                                 s.info.channel_name, raid.target_login
                             );
-                            gql::join_raid(&raid.id, &self.token.access_token)
-                                .await
-                                .context("Raiding user")?;
+                            self.gql.join_raid(&raid.id).await.context("Raiding user")?;
                         }
                     }
                 }
@@ -366,11 +370,15 @@ impl PubSub {
                 self.upsert_prediction(&streamer, &event).await?;
 
                 let channel_id = event.channel_id.parse()?;
-                let points_value = gql::get_channel_points(
-                    &[&self.streamers.get(&streamer).unwrap().info.channel_name],
-                    &self.token.access_token,
-                )
-                .await?[0]
+                let points_value = self
+                    .gql
+                    .get_channel_points(&[&self
+                        .streamers
+                        .get(&streamer)
+                        .unwrap()
+                        .info
+                        .channel_name])
+                    .await?[0]
                     .0;
                 let closed_at =
                     chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(
@@ -433,7 +441,9 @@ impl PubSub {
             return Ok(());
         }
         if s.last_points_refresh.elapsed() > Duration::from_secs(30) {
-            let points = gql::get_channel_points(&[&s.info.channel_name], &self.token.access_token)
+            let points = self
+                .gql
+                .get_channel_points(&[&s.info.channel_name])
                 .await
                 .context("Get channel points")?;
             let s = self.streamers.get_mut(streamer).unwrap();
@@ -449,26 +459,20 @@ impl PubSub {
                 "{}: predicting {}, with points {}",
                 s.info.channel_name, event_id, points_to_bet
             );
-            gql::make_prediction(
-                points_to_bet,
-                event_id,
-                &outcome_id,
-                &self.token.access_token,
-                self.simulate,
-            )
-            .await
-            .context("Make prediction")?;
+            self.gql
+                .make_prediction(points_to_bet, event_id, &outcome_id, self.simulate)
+                .await
+                .context("Make prediction")?;
             let s = self.streamers.get_mut(streamer).unwrap();
             s.predictions.get_mut(event_id).unwrap().1 = true;
 
             #[cfg(feature = "analytics")]
             {
                 let channel_id = streamer.as_str().parse::<i32>()?;
-                let points = gql::get_channel_points(
-                    &[s.info.channel_name.as_str()],
-                    &self.token.access_token,
-                )
-                .await?;
+                let points = self
+                    .gql
+                    .get_channel_points(&[s.info.channel_name.as_str()])
+                    .await?;
                 self.analytics
                     .execute(|analytics| {
                         let entry_id = analytics.last_prediction_id(channel_id, event_id)?;
@@ -498,9 +502,9 @@ impl PubSub {
             .map(|x| (x.0.clone(), x.1.info.clone()))
             .collect();
         let live_runner = spawn(crate::live::run(
-            Arc::new(self.token.clone()),
             self.events_tx.clone(),
             channels,
+            self.gql.clone(),
         ));
 
         self.live_runner.replace(live_runner);
@@ -771,14 +775,10 @@ async fn view_points(pubsub: Arc<RwLock<PubSub>>, events_rx: Receiver<Events>) {
     }
 }
 
-async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>) -> Result<()> {
+async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>, gql: gql::Client) -> Result<()> {
     sleep(Duration::from_secs(5)).await;
-    let access_token = {
-        let reader = pubsub.read().await;
-        reader.token.access_token.clone()
-    };
 
-    async fn inner(pubsub: &Arc<RwLock<PubSub>>, access_token: &str) -> Result<()> {
+    async fn inner(pubsub: &Arc<RwLock<PubSub>>, gql: &gql::Client) -> Result<()> {
         let streamer = {
             let reader = pubsub.read().await;
             reader
@@ -799,7 +799,7 @@ async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>) -> Result<()> {
             return Ok(());
         }
 
-        let points = gql::get_channel_points(&channel_names, access_token).await?;
+        let points = gql.get_channel_points(&channel_names).await?;
         {
             #[cfg(feature = "analytics")]
             let mut points_value;
@@ -817,8 +817,7 @@ async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>) -> Result<()> {
                     s.last_points_refresh = Instant::now();
                     if let Some(claim_id) = &points[idx].1 {
                         info!("Claiming community points bonus {}", s.info.channel_name);
-                        let claimed_points =
-                            gql::claim_points(id.as_str(), claim_id, access_token).await?;
+                        let claimed_points = gql.claim_points(id.as_str(), claim_id).await?;
                         #[cfg(feature = "analytics")]
                         {
                             points_value = s.points;
@@ -849,7 +848,7 @@ async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>) -> Result<()> {
     }
 
     loop {
-        if let Err(err) = inner(&pubsub, &access_token).await {
+        if let Err(err) = inner(&pubsub, &gql).await {
             error!("{err}");
         }
 

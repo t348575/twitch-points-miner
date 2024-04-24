@@ -110,9 +110,14 @@ async fn main() -> Result<()> {
     .context("Parsing tokens file")?;
     info!("Parsed tokens file");
 
-    let user_info = twitch::gql::get_user_id(&token.access_token).await?;
+    let gql = twitch::gql::Client::new(
+        token.access_token.clone(),
+        "https://gql.twitch.tv/gql".to_owned(),
+    );
+    let user_info = gql.get_user_id().await?;
     let streamer_names = c.streamers.keys().map(|s| s.as_str()).collect::<Vec<_>>();
-    let channels = twitch::gql::streamer_metadata(&streamer_names, &token.access_token)
+    let channels = gql
+        .streamer_metadata(&streamer_names)
         .await
         .wrap_err_with(|| "Could not get streamer list. Is your token valid?")?;
     info!("Got streamer list");
@@ -133,14 +138,14 @@ async fn main() -> Result<()> {
     };
 
     let channels = channels.into_iter().flatten().collect::<Vec<_>>();
-    let points = twitch::gql::get_channel_points(
-        &channels
-            .iter()
-            .map(|x| x.1.channel_name.as_str())
-            .collect::<Vec<_>>(),
-        &token.access_token,
-    )
-    .await?;
+    let points = gql
+        .get_channel_points(
+            &channels
+                .iter()
+                .map(|x| x.1.channel_name.as_str())
+                .collect::<Vec<_>>(),
+        )
+        .await?;
 
     #[cfg(feature = "analytics")]
     for (c, p) in channels.iter().zip(&points) {
@@ -161,22 +166,18 @@ async fn main() -> Result<()> {
         }
     }
 
-    let active_predictions = twitch::gql::channel_points_context(
-        &channels
-            .iter()
-            .map(|x| x.1.channel_name.as_str())
-            .collect::<Vec<_>>(),
-        &token.access_token,
-    )
-    .await?;
+    let active_predictions = gql
+        .channel_points_context(
+            &channels
+                .iter()
+                .map(|x| x.1.channel_name.as_str())
+                .collect::<Vec<_>>(),
+        )
+        .await?;
 
     println!("Everything ok, starting twitch pubsub");
     let (events_tx, events_rx) = unbounded::<live::Events>();
-    let live = spawn(live::run(
-        Arc::new(token.clone()),
-        events_tx.clone(),
-        channels.clone(),
-    ));
+    let live = spawn(live::run(events_tx.clone(), channels.clone(), gql.clone()));
     let pubsub_data = Arc::new(RwLock::new(pubsub::PubSub::new(
         c_original,
         args.config,
@@ -191,6 +192,7 @@ async fn main() -> Result<()> {
         args.simulate,
         token.clone(),
         user_info,
+        gql.clone(),
         #[cfg(feature = "web_api")]
         live,
         #[cfg(feature = "web_api")]
@@ -203,6 +205,7 @@ async fn main() -> Result<()> {
         token.clone(),
         events_rx,
         pubsub_data.clone(),
+        gql,
     ));
 
     #[cfg(feature = "web_api")]
@@ -218,4 +221,46 @@ async fn main() -> Result<()> {
     live.await??;
 
     Ok(())
+}
+
+#[cfg(test)]
+pub mod test {
+    use rstest::fixture;
+    use testcontainers::{clients::Cli, core::WaitFor, Container, GenericImage};
+
+    #[ctor::ctor]
+    fn init() {
+        let mut child = std::process::Command::new("docker")
+            .arg("build")
+            .arg("-f")
+            .arg("mock.dockerfile")
+            .arg("--tag")
+            .arg("twitch-mock:latest")
+            .arg(".")
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("Could not build twitch-mock:latest");
+        if !child.wait().expect("Could not run docker").success() {
+            panic!("Could not build twitch-mock:latest");
+        }
+    }
+
+    fn image() -> GenericImage {
+        GenericImage::new("twitch-mock", "latest")
+            .with_exposed_port(3000)
+            .with_wait_for(WaitFor::message_on_stdout("ready"))
+    }
+
+    #[fixture]
+    #[once]
+    fn docker() -> Cli {
+        Cli::default()
+    }
+
+    #[fixture]
+    pub fn container<'a>(docker: &'a Cli) -> Container<'a, GenericImage> {
+        let container = docker.run(image());
+        container.start();
+        container
+    }
 }

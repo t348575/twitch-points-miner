@@ -97,15 +97,14 @@ struct MakePrediction {
 )]
 async fn make_prediction(
     State(data): State<ApiState>,
-    Extension(token): Extension<Arc<Token>>,
     Path(streamer): Path<String>,
     Json(payload): Json<MakePrediction>,
 ) -> Result<StatusCode, ApiError> {
     let mut data = data.write().await;
     let simulate = data.simulate;
 
+    let gql = data.gql.clone();
     let s = data.get_by_name(&streamer);
-
     if s.is_none() {
         return Err(ApiError::StreamerDoesNotExist);
     }
@@ -131,9 +130,9 @@ async fn make_prediction(
             payload.event_id.clone(),
             payload.outcome_id,
             *payload.points.as_ref().unwrap(),
-            &token,
             simulate,
             &s.info.channel_name,
+            &gql,
             #[cfg(feature = "analytics")]
             (analytics, &s_id, &streamer),
         )
@@ -147,9 +146,9 @@ async fn make_prediction(
                     payload.event_id.clone(),
                     o,
                     p,
-                    &token,
                     simulate,
                     &s.info.channel_name,
+                    &gql,
                     #[cfg(feature = "analytics")]
                     (analytics, &s_id, &streamer),
                 )
@@ -167,24 +166,18 @@ async fn place_bet(
     event_id: String,
     outcome_id: String,
     points: u32,
-    token: &Token,
     simulate: bool,
     streamer_name: &str,
+    gql: &gql::Client,
     #[cfg(feature = "analytics")] analytics: (Arc<crate::analytics::AnalyticsWrapper>, &str, &str),
 ) -> Result<(), ApiError> {
     info!(
         "{}: predicting {}, with points {}",
         streamer_name, event_id, points
     );
-    gql::make_prediction(
-        points,
-        &event_id,
-        &outcome_id,
-        &token.access_token,
-        simulate,
-    )
-    .await
-    .map_err(ApiError::twitch_api_error)?;
+    gql.make_prediction(points, &event_id, &outcome_id, simulate)
+        .await
+        .map_err(ApiError::twitch_api_error)?;
 
     #[cfg(feature = "analytics")]
     {
@@ -193,7 +186,8 @@ async fn place_bet(
             .parse::<i32>()
             .map_err(|err| err.into())
             .map_err(ApiError::internal_error)?;
-        let channel_points = gql::get_channel_points(&[analytics.2], &token.access_token)
+        let channel_points = gql
+            .get_channel_points(&[analytics.2])
             .await
             .map_err(ApiError::twitch_api_error)?;
         analytics

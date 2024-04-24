@@ -69,7 +69,7 @@ pub enum ConfigTypeRef {
     Specific,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct StreamerInfo {
@@ -77,6 +77,15 @@ pub struct StreamerInfo {
     pub live: bool,
     pub channel_name: String,
     pub game: Option<Game>,
+}
+
+impl StreamerInfo {
+    pub fn with_channel_name(channel_name: &str) -> Self {
+        Self {
+            channel_name: channel_name.to_owned(),
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

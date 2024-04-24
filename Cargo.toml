@@ -34,8 +34,9 @@ utoipa = { version = "4", features = ["axum_extras", "chrono"], optional = true 
 utoipa-swagger-ui = { version = "6", features = ["axum"], optional = true }
 tower-http = { version = "0.5", features = ["trace", "cors", "fs"], optional = true }
 indexmap = { version = "2.2", features = ["serde"] }
-tracing-appender = "0.2.3"
-flume = "0.11.0"
+tracing-appender = "0.2"
+flume = "0.11"
+strum_macros = "0.26"
 
 [features]
 web_api = ["dep:axum", "dep:utoipa", "dep:utoipa-swagger-ui", "twitch_api/utoipa", "dep:tower-http"]
@@ -43,6 +44,9 @@ analytics = ["dep:diesel", "dep:diesel_migrations", "dep:libsqlite3-sys"]
 
 [dev-dependencies]
 twitch_api = { features = ["pubsub", "unsupported", "time"], git = "https://github.com/t348575/twitch_api", branch = "hidden_pubsubs" }
+testcontainers = "0.15"
+ctor = "0.2"
+rstest = "0.19"
 env_logger = "0.11"
 
 [profile.release]
@@ -52,6 +56,10 @@ strip = true
 [[bin]]
 name = "twitch-points-miner"
 path = "src/main.rs"
+
+[[bin]]
+name = "twitch-mock"
+path = "src/mock.rs"
 
 # [[bin]]
 # name = "default-config"
