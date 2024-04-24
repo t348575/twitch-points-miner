@@ -7,20 +7,19 @@ use axum::{
     Extension, Json, Router,
 };
 
-#[cfg(feature = "analytics")]
 use color_eyre::eyre::Context;
+use common::{
+    config::ConfigType,
+    twitch::{auth::Token, gql},
+    types::*,
+};
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use twitch_api::{pubsub::predictions::Event, types::UserId};
 use utoipa::ToSchema;
 
-use crate::{
-    config::ConfigType,
-    make_paths, sub_error,
-    twitch::{auth::Token, gql},
-    types::*,
-};
+use crate::{make_paths, sub_error};
 
 use super::{ApiError, ApiState, RouterBuild, WebApiError};
 
@@ -200,30 +199,27 @@ async fn mine_streamer(
     writer.save_config("Mine streamer").await?;
     writer.restart_live_watcher();
 
-    #[cfg(feature = "analytics")]
-    {
-        let id = streamer
-            .0
-            .as_str()
-            .parse()
-            .context("Parse streamer id")
-            .map_err(ApiError::internal_error)?;
-        let inserted = writer
+    let id = streamer
+        .0
+        .as_str()
+        .parse()
+        .context("Parse streamer id")
+        .map_err(ApiError::internal_error)?;
+    let inserted = writer
+        .analytics
+        .execute(|analytics| analytics.insert_streamer(id, streamer.1.channel_name))
+        .await?;
+    if inserted {
+        writer
             .analytics
-            .execute(|analytics| analytics.insert_streamer(id, streamer.1.channel_name))
+            .execute(|analytics| {
+                analytics.insert_points(
+                    id,
+                    points as i32,
+                    crate::analytics::model::PointsInfo::FirstEntry,
+                )
+            })
             .await?;
-        if inserted {
-            writer
-                .analytics
-                .execute(|analytics| {
-                    analytics.insert_points(
-                        id,
-                        points as i32,
-                        crate::analytics::model::PointsInfo::FirstEntry,
-                    )
-                })
-                .await?;
-        }
     }
 
     Ok(())

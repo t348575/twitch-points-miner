@@ -10,26 +10,36 @@ use crate::{
 
 use super::{CHROME_USER_AGENT, CLIENT_ID};
 
-pub async fn get_spade_url(streamer: &str) -> Result<String> {
+pub async fn get_spade_url(streamer: &str, base_url: &str) -> Result<String> {
     let client = reqwest::Client::new();
     let res = client
-        .get(format!("https://www.twitch.tv/{streamer}"))
+        .get(format!("{base_url}/{streamer}"))
         .header("User-Agent", CHROME_USER_AGENT)
         .send()
         .await?;
 
     let page_text = res.text().await?;
 
-    async fn inner(client: &reqwest::Client, text: &str, uri: &str) -> Result<String> {
+    async fn inner(
+        client: &reqwest::Client,
+        text: &str,
+        uri: &str,
+        #[cfg(feature = "testing")] base_url: &str,
+    ) -> Result<String> {
         match text.split_once(uri) {
             Some((_, after)) => match after.split_once(".js") {
                 Some((pattern_js, _)) => {
+                    #[cfg(feature = "testing")]
+                    let prefix = format!("{base_url}/");
+                    #[cfg(not(feature = "testing"))]
+                    let prefix = "";
                     let res = client
-                        .get(format!("{uri}{pattern_js}.js"))
+                        .get(format!("{prefix}{uri}{pattern_js}.js"))
                         .header("User-Agent", CHROME_USER_AGENT)
                         .send()
                         .await?;
-                    match res.text().await?.split_once(r#""spade_url":""#) {
+                    let text = res.text().await?;
+                    match text.split_once(r#""spade_url":""#) {
                         Some((_, after)) => match after.split_once('"') {
                             Some((url, _)) => Ok(url.to_string()),
                             None => Err(eyre!(r#"Failed to get spade url: ""#)),
@@ -46,7 +56,12 @@ pub async fn get_spade_url(streamer: &str) -> Result<String> {
     match inner(
         &client,
         &page_text,
+        #[cfg(feature = "testing")]
+        "config/settings.",
+        #[cfg(not(feature = "testing"))]
         "https://static.twitchcdn.net/config/settings.",
+        #[cfg(feature = "testing")]
+        base_url,
     )
     .await
     {
@@ -56,6 +71,8 @@ pub async fn get_spade_url(streamer: &str) -> Result<String> {
                 &client,
                 &page_text,
                 "https://assets.twitch.tv/config/settings.",
+                #[cfg(feature = "testing")]
+                base_url,
             )
             .await
         }

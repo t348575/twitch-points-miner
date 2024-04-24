@@ -12,10 +12,10 @@ jobs:
     - uses: SebRollen/toml-action@v1.2.0
       id: read_version
       with:
-        file: 'Cargo.toml'
+        file: 'app/Cargo.toml'
         field: 'package.version'
     - name: Build the Docker image
-      run: docker build . --file Dockerfile --tag t348575/twitch-points-miner:${{ steps.read_version.outputs.value }}
+      run: docker build . --file app.dockerfile --tag t348575/twitch-points-miner:${{ steps.read_version.outputs.value }}
     - name: Tag latest
       run: docker tag t348575/twitch-points-miner:${{ steps.read_version.outputs.value }} t348575/twitch-points-miner:latest
     - name: Login to docker

@@ -9,17 +9,10 @@ use tokio::{fs, spawn};
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-#[cfg(feature = "web_api")]
-mod web_api;
-
-#[cfg(feature = "analytics")]
 mod analytics;
-
-mod config;
 mod live;
 mod pubsub;
-mod twitch;
-mod types;
+mod web_api;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -28,7 +21,6 @@ struct Args {
     #[arg(short, long, default_value_t = String::from("config.yaml"))]
     config: String,
     /// API address to bind
-    #[cfg(feature = "web_api")]
     #[arg(short, long, default_value_t = String::from("0.0.0.0:3000"))]
     address: String,
     /// Simulate predictions, don't actually make them
@@ -41,10 +33,11 @@ struct Args {
     #[arg(short, long, default_value_t = false)]
     log_to_file: bool,
     /// Enable analytics, enabled by default
-    #[cfg(feature = "analytics")]
     #[arg(long, default_value_t = true)]
     analytics: bool,
 }
+
+const BASE_URL: &str = "https://twitch.tv";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -76,10 +69,10 @@ async fn main() -> Result<()> {
 
     if !Path::new(&args.token).exists() {
         info!("Starting login sequence");
-        twitch::auth::login(&args.token).await?;
+        common::twitch::auth::login(&args.token).await?;
     }
 
-    let mut c: config::Config = serde_yaml::from_str(
+    let mut c: common::config::Config = serde_yaml::from_str(
         &fs::read_to_string(&args.config)
             .await
             .context("Reading config file")?,
@@ -102,7 +95,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    let token: twitch::auth::Token = serde_json::from_str(
+    let token: common::twitch::auth::Token = serde_json::from_str(
         &fs::read_to_string(args.token)
             .await
             .context("Reading tokens file")?,
@@ -110,7 +103,7 @@ async fn main() -> Result<()> {
     .context("Parsing tokens file")?;
     info!("Parsed tokens file");
 
-    let gql = twitch::gql::Client::new(
+    let gql = common::twitch::gql::Client::new(
         token.access_token.clone(),
         "https://gql.twitch.tv/gql".to_owned(),
     );
@@ -128,7 +121,6 @@ async fn main() -> Result<()> {
         }
     }
 
-    #[cfg(feature = "analytics")]
     let analytics = if args.analytics {
         Arc::new(analytics::AnalyticsWrapper::new(
             &c.analytics_db.unwrap_or("analytics.db".to_owned()),
@@ -147,7 +139,6 @@ async fn main() -> Result<()> {
         )
         .await?;
 
-    #[cfg(feature = "analytics")]
     for (c, p) in channels.iter().zip(&points) {
         let id = c.0.as_str().parse::<i32>()?;
         let inserted = analytics
@@ -177,7 +168,12 @@ async fn main() -> Result<()> {
 
     println!("Everything ok, starting twitch pubsub");
     let (events_tx, events_rx) = unbounded::<live::Events>();
-    let live = spawn(live::run(events_tx.clone(), channels.clone(), gql.clone()));
+    let live = spawn(live::run(
+        events_tx.clone(),
+        channels.clone(),
+        gql.clone(),
+        BASE_URL.to_owned(),
+    ));
     let pubsub_data = Arc::new(RwLock::new(pubsub::PubSub::new(
         c_original,
         args.config,
@@ -193,11 +189,9 @@ async fn main() -> Result<()> {
         token.clone(),
         user_info,
         gql.clone(),
-        #[cfg(feature = "web_api")]
+        BASE_URL,
         live,
-        #[cfg(feature = "web_api")]
         events_tx,
-        #[cfg(feature = "analytics")]
         analytics,
     )?));
 
@@ -208,17 +202,12 @@ async fn main() -> Result<()> {
         gql,
     ));
 
-    #[cfg(feature = "web_api")]
     println!("Starting web api!");
 
-    #[cfg(feature = "web_api")]
     let axum_server = web_api::get_api_server(args.address, pubsub_data, Arc::new(token)).await;
 
-    #[cfg(feature = "web_api")]
     axum_server.await?;
     pubsub.await??;
-    #[cfg(not(feature = "web_api"))]
-    live.await??;
 
     Ok(())
 }
@@ -233,10 +222,16 @@ pub mod test {
         let mut child = std::process::Command::new("docker")
             .arg("build")
             .arg("-f")
-            .arg("mock.dockerfile")
+            .arg(format!(
+                "{}/../mock.dockerfile",
+                std::env::var("CARGO_MANIFEST_DIR").unwrap()
+            ))
             .arg("--tag")
             .arg("twitch-mock:latest")
-            .arg(".")
+            .arg(format!(
+                "{}/../",
+                std::env::var("CARGO_MANIFEST_DIR").unwrap()
+            ))
             .stdout(std::process::Stdio::piped())
             .spawn()
             .expect("Could not build twitch-mock:latest");

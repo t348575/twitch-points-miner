@@ -14,7 +14,6 @@ pub struct Config {
     pub streamers: IndexMap<String, ConfigType>,
     pub presets: Option<IndexMap<String, StreamerConfig>>,
     pub watch_streak: Option<bool>,
-    #[cfg(feature = "analytics")]
     pub analytics_db: Option<String>,
 }
 

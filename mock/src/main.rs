@@ -1,21 +1,22 @@
 use std::{collections::HashMap, sync::Arc};
 
-use axum::{extract::State, response::IntoResponse, routing::post, Json, Router};
+use axum::{
+    extract::State,
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
 use color_eyre::eyre::Result;
+use common::twitch::gql::{self, GqlRequest, Variables};
 use http::StatusCode;
 use tokio::{signal, sync::Mutex};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
-use twitch::gql::{GqlRequest, Variables};
 use twitch_api::types::UserId;
-
-mod config;
-mod twitch;
-mod types;
 
 #[derive(Default)]
 struct AppState {
-    streamer_metadata: HashMap<UserId, (String, twitch::gql::User)>,
+    streamer_metadata: HashMap<UserId, (String, gql::User)>,
 }
 
 #[tokio::main]
@@ -31,6 +32,15 @@ async fn main() -> Result<()> {
     let router = Router::new()
         .route("/gql", post(gql_handler))
         .route("/streamer_metadata", post(set_streamer_metadata))
+        .route(
+            "/base/:streamer",
+            get(|| async { "config/settings.12345.js" }),
+        )
+        .route(
+            "/base/config/settings.12345.js",
+            get(|| async { r#""spade_url":"/spade""# }),
+        )
+        .route("/spade", get(|| async { StatusCode::OK }))
         .with_state(state)
         .layer(TraceLayer::new_for_http());
 
@@ -82,14 +92,14 @@ impl AppState {
         }
     }
 
-    fn get_by_name(&self, name: &str) -> Option<&(String, twitch::gql::User)> {
+    fn get_by_name(&self, name: &str) -> Option<&(String, gql::User)> {
         self.streamer_metadata.values().find(|u| u.0.eq(name))
     }
 }
 
 async fn set_streamer_metadata(
     State(state): State<Arc<Mutex<AppState>>>,
-    Json(body): Json<HashMap<UserId, (String, twitch::gql::User)>>,
+    Json(body): Json<HashMap<UserId, (String, gql::User)>>,
 ) -> impl IntoResponse {
     let mut state = state.lock().await;
     state.streamer_metadata = body;
@@ -119,6 +129,7 @@ async fn shutdown_signal() {
         _ = terminate => {},
     }
 }
+
 pub mod vec_or_one {
     use serde::{self, de, Deserialize, Serialize, Serializer};
     #[derive(Deserialize, Debug)]

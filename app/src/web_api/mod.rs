@@ -5,6 +5,11 @@ use axum::{
     Router,
 };
 use color_eyre::eyre::{Context, Report};
+use common::{
+    config::{filters::Filter, strategy::*, PredictionConfig, StreamerConfig},
+    twitch::auth::Token,
+    types::*,
+};
 use tokio::sync::RwLock;
 use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 use twitch_api::{
@@ -17,14 +22,8 @@ use utoipa::{
 };
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::{
-    config::{filters::Filter, strategy::*, PredictionConfig, StreamerConfig},
-    pubsub::PubSub,
-    twitch::auth::Token,
-    types::*,
-};
+use crate::pubsub::PubSub;
 
-#[cfg(feature = "analytics")]
 mod analytics;
 mod config;
 mod predictions;
@@ -101,7 +100,6 @@ pub async fn get_api_server(
     schemas.extend(config.1);
     paths.extend(config.2);
 
-    #[cfg(feature = "analytics")]
     let analytics = {
         let analytics = analytics::build(pubsub.clone(), token.clone());
         schemas.extend(analytics.1);
@@ -121,12 +119,8 @@ pub async fn get_api_server(
         .nest("/streamers", streamer.0)
         .nest("/predictions", predictions.0)
         .nest("/config", config.0)
+        .nest("/analytics", analytics)
         .route("/", get(app_state).with_state(pubsub.clone()));
-
-    #[cfg(feature = "analytics")]
-    {
-        api = api.nest("/analytics", analytics);
-    }
 
     let router = Router::new()
         .merge(SwaggerUi::new("/docs").url("/docs/openapi.json", openapi))
@@ -157,7 +151,6 @@ enum ApiError {
     StreamerDoesNotExist,
     #[error("Could not parse RFC3339 timestamp: {0}")]
     ParseTimestamp(String),
-    #[cfg(feature = "analytics")]
     #[error("Analytics module error {0}")]
     AnalyticsError(crate::analytics::AnalyticsError),
     #[error("Error sending request to the twitch API {0}")]
@@ -178,7 +171,6 @@ impl From<chrono::ParseError> for ApiError {
     }
 }
 
-#[cfg(feature = "analytics")]
 impl From<crate::analytics::AnalyticsError> for ApiError {
     fn from(value: crate::analytics::AnalyticsError) -> Self {
         ApiError::AnalyticsError(value)
@@ -202,7 +194,6 @@ impl IntoResponse for ApiError {
             ApiError::StreamerDoesNotExist => StatusCode::BAD_REQUEST,
             ApiError::TwitchAPIError(_) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::InternalError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            #[cfg(feature = "analytics")]
             ApiError::AnalyticsError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::SubError(s) => return s.make_response(),
         };

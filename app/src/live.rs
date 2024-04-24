@@ -1,15 +1,14 @@
 use std::{collections::HashMap, time::Duration};
 
 use color_eyre::{eyre::Context, Result};
+use common::{
+    twitch::{api, gql},
+    types::StreamerInfo,
+};
 use flume::Sender;
 use tokio::time::{interval, sleep};
 use tracing::{debug, error};
 use twitch_api::types::UserId;
-
-use crate::{
-    twitch::{api, gql},
-    types::StreamerInfo,
-};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Events {
@@ -24,11 +23,12 @@ pub async fn run(
     events_tx: Sender<Events>,
     channels: Vec<(UserId, StreamerInfo)>,
     gql: gql::Client,
+    base_url: String,
 ) -> Result<()> {
     debug!("{channels:#?}");
 
     loop {
-        if let Err(err) = inner(&events_tx, &channels, &gql, 60 * 1000).await {
+        if let Err(err) = inner(&events_tx, &channels, &gql, &base_url, 60 * 1000).await {
             error!("{err}");
         }
 
@@ -40,6 +40,7 @@ async fn inner(
     events_tx: &Sender<Events>,
     channels: &[(UserId, StreamerInfo)],
     gql: &gql::Client,
+    base_url: &str,
     wait: u64,
 ) -> Result<()> {
     let mut channels_status: HashMap<UserId, bool> =
@@ -82,7 +83,7 @@ async fn inner(
         if !get_spade_using.is_empty() && count == 10 {
             events_tx
                 .send_async(Events::SpadeUpdate(
-                    api::get_spade_url(&get_spade_using).await?,
+                    api::get_spade_url(&get_spade_using, base_url).await?,
                 ))
                 .await?;
             count = 0;
@@ -95,6 +96,7 @@ async fn inner(
 
 #[cfg(test)]
 mod test {
+    use common::twitch::gql::Client;
     use flume::unbounded;
     use rstest::rstest;
     use serde_json::json;
@@ -102,10 +104,7 @@ mod test {
     use testcontainers::{Container, GenericImage};
     use tokio::{spawn, time::timeout};
 
-    use crate::{
-        test::container,
-        twitch::gql::Client
-    };
+    use crate::test::container;
 
     use super::*;
 
@@ -113,11 +112,13 @@ mod test {
     #[tokio::test]
     #[rustfmt::skip]
     async fn live_sequence(container: Container<'_, GenericImage>) {
+        env_logger::init();
         let gql_test = Client::new(
             "".to_owned(),
             format!("http://localhost:{}/gql", container.get_host_port_ipv4(3000)),
         );
         let metadata_uri = format!("http://localhost:{}/streamer_metadata", container.get_host_port_ipv4(3000));
+        let spade_uri = format!("http://localhost:{}/base", container.get_host_port_ipv4(3000));
 
         let mut user_a = User {
             id: UserId::from_static("1"),
@@ -151,7 +152,7 @@ mod test {
             (UserId::from_static("1"), StreamerInfo::with_channel_name("a")),
             (UserId::from_static("3"), StreamerInfo::with_channel_name("b")),
         ];
-        let live = spawn(async move { inner(&events_tx, &channels, &gql_test, 50).await });
+        let live = spawn(async move { inner(&events_tx, &channels, &gql_test, &spade_uri, 50).await });
 
         let res = timeout(Duration::from_secs(1), events_rx.recv_async()).await;
         assert!(res.is_ok());

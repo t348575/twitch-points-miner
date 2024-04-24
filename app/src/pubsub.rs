@@ -9,6 +9,14 @@ use color_eyre::{
     eyre::{eyre, Context, ContextCompat},
     Result,
 };
+use common::{
+    config::{self, filters::filter_matches, strategy, Config, ConfigType, StreamerConfig},
+    tokio_tungstenite::tungstenite::Message,
+    twitch::{api, auth::Token, gql, ws},
+    types::{
+        ConfigTypeRef, StreamerConfigRef, StreamerConfigRefWrapper, StreamerInfo, StreamerState,
+    },
+};
 use flume::{unbounded, Receiver, Sender};
 use futures::StreamExt;
 use indexmap::IndexMap;
@@ -17,10 +25,8 @@ use rand::{
     Rng,
 };
 use serde::Serialize;
-#[cfg(feature = "web_api")]
 use tokio::task::JoinHandle;
 use tokio::{spawn, sync::RwLock, time::sleep};
-use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
 use twitch_api::{
     pubsub::{
@@ -33,20 +39,10 @@ use twitch_api::{
     types::UserId,
 };
 
-use crate::{
-    config::{self, filters::filter_matches, strategy, Config, ConfigType, StreamerConfig},
-    live::Events,
-    twitch::{api, auth::Token, gql, ws},
-    types::{
-        ConfigTypeRef, StreamerConfigRef, StreamerConfigRefWrapper, StreamerInfo, StreamerState,
-    },
-};
-
-#[cfg(feature = "analytics")]
 use crate::analytics::model::{PointsInfo, Prediction};
+use crate::live::Events;
 
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PubSub {
     #[serde(skip)]
     pub config: Config,
@@ -63,13 +59,12 @@ pub struct PubSub {
     pub configs: HashMap<String, StreamerConfigRefWrapper>,
     #[serde(skip)]
     pub gql: gql::Client,
-    #[cfg(feature = "web_api")]
+    #[serde(skip)]
+    pub base_url: String,
     #[serde(skip)]
     pub live_runner: Option<JoinHandle<Result<()>>>,
-    #[cfg(feature = "web_api")]
     #[serde(skip)]
     pub events_tx: Sender<Events>,
-    #[cfg(feature = "analytics")]
     #[serde(skip)]
     pub analytics: Arc<crate::analytics::AnalyticsWrapper>,
 }
@@ -84,15 +79,13 @@ impl Clone for PubSub {
             user_id: self.user_id.clone(),
             user_name: self.user_name.clone(),
             configs: self.configs.clone(),
-            #[cfg(feature = "web_api")]
             live_runner: None,
-            #[cfg(feature = "web_api")]
             events_tx: self.events_tx.clone(),
-            #[cfg(feature = "analytics")]
             analytics: self.analytics.clone(),
             config: self.config.clone(),
             config_path: self.config_path.clone(),
             gql: self.gql.clone(),
+            base_url: self.base_url.clone(),
         }
     }
 }
@@ -109,9 +102,10 @@ impl PubSub {
         token: Token,
         user_info: (String, String),
         gql: gql::Client,
-        #[cfg(feature = "web_api")] live_runner: JoinHandle<Result<()>>,
-        #[cfg(feature = "web_api")] events_tx: Sender<Events>,
-        #[cfg(feature = "analytics")] analytics: Arc<crate::analytics::AnalyticsWrapper>,
+        base_url: &str,
+        live_runner: JoinHandle<Result<()>>,
+        events_tx: Sender<Events>,
+        analytics: Arc<crate::analytics::AnalyticsWrapper>,
     ) -> Result<PubSub> {
         let mut configs = channels
             .iter()
@@ -172,31 +166,26 @@ impl PubSub {
             user_id: user_info.0,
             user_name: user_info.1,
             configs,
-            #[cfg(feature = "web_api")]
             live_runner: Some(live_runner),
-            #[cfg(feature = "web_api")]
             events_tx,
-            #[cfg(feature = "analytics")]
             analytics,
             gql,
+            base_url: base_url.to_string(),
         })
     }
 
-    #[cfg(feature = "web_api")]
     pub fn get_by_name(&self, name: &str) -> Option<&StreamerState> {
         self.streamers
             .values()
             .find(|s| s.info.channel_name == name)
     }
 
-    #[cfg(feature = "web_api")]
     pub fn get_by_name_mut(&mut self, name: &str) -> Option<&mut StreamerState> {
         self.streamers
             .values_mut()
             .find(|s| s.info.channel_name == name)
     }
 
-    #[cfg(feature = "web_api")]
     pub fn get_id_by_name(&self, name: &str) -> Option<&str> {
         for (k, v) in self.streamers.iter() {
             if v.info.channel_name == name {
@@ -297,7 +286,6 @@ impl PubSub {
         Ok(())
     }
 
-    #[cfg(feature = "analytics")]
     async fn upsert_prediction(&mut self, streamer: &UserId, event: &Event) -> Result<()> {
         let channel_id = streamer.as_str().parse()?;
         let created_at = chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(
@@ -349,61 +337,51 @@ impl PubSub {
             s.predictions
                 .insert(event.id.clone(), (event.clone(), false));
 
-            #[cfg(feature = "analytics")]
             self.upsert_prediction(&streamer, &event).await?;
 
             self.try_prediction(&streamer, &event_id).await?;
         } else if event.ended_at.is_some() {
             info!("Prediction {} ended", event.id);
-            #[cfg(feature = "analytics")]
+            if !self
+                .streamers
+                .get_mut(&streamer)
+                .unwrap()
+                .predictions
+                .contains_key(event.id.as_str())
             {
-                if !self
-                    .streamers
-                    .get_mut(&streamer)
-                    .unwrap()
-                    .predictions
-                    .contains_key(event.id.as_str())
-                {
-                    return Ok(());
-                }
-
-                self.upsert_prediction(&streamer, &event).await?;
-
-                let channel_id = event.channel_id.parse()?;
-                let points_value = self
-                    .gql
-                    .get_channel_points(&[&self
-                        .streamers
-                        .get(&streamer)
-                        .unwrap()
-                        .info
-                        .channel_name])
-                    .await?[0]
-                    .0;
-                let closed_at =
-                    chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(
-                        event.ended_at.unwrap().as_str(),
-                    )?
-                    .naive_local();
-
-                self.analytics
-                    .execute(|analytics| {
-                        let entry_id = analytics.last_prediction_id(channel_id, &event.id)?;
-                        analytics.insert_points(
-                            channel_id,
-                            points_value as i32,
-                            PointsInfo::Prediction(event.id.clone(), entry_id),
-                        )?;
-                        analytics.end_prediction(
-                            &event.id,
-                            channel_id,
-                            event.winning_outcome_id,
-                            event.outcomes.into(),
-                            closed_at,
-                        )
-                    })
-                    .await?;
+                return Ok(());
             }
+
+            self.upsert_prediction(&streamer, &event).await?;
+
+            let channel_id = event.channel_id.parse()?;
+            let points_value = self
+                .gql
+                .get_channel_points(&[&self.streamers.get(&streamer).unwrap().info.channel_name])
+                .await?[0]
+                .0;
+            let closed_at = chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(
+                event.ended_at.unwrap().as_str(),
+            )?
+            .naive_local();
+
+            self.analytics
+                .execute(|analytics| {
+                    let entry_id = analytics.last_prediction_id(channel_id, &event.id)?;
+                    analytics.insert_points(
+                        channel_id,
+                        points_value as i32,
+                        PointsInfo::Prediction(event.id.clone(), entry_id),
+                    )?;
+                    analytics.end_prediction(
+                        &event.id,
+                        channel_id,
+                        event.winning_outcome_id,
+                        event.outcomes.into(),
+                        closed_at,
+                    )
+                })
+                .await?;
 
             self.streamers
                 .get_mut(&streamer)
@@ -418,7 +396,6 @@ impl PubSub {
             let event_id = event.id.clone();
             info!("Prediction {} updated", event.id);
 
-            #[cfg(feature = "analytics")]
             self.upsert_prediction(&streamer, &event).await?;
             if let Some((e, _)) = self
                 .streamers
@@ -466,31 +443,27 @@ impl PubSub {
             let s = self.streamers.get_mut(streamer).unwrap();
             s.predictions.get_mut(event_id).unwrap().1 = true;
 
-            #[cfg(feature = "analytics")]
-            {
-                let channel_id = streamer.as_str().parse::<i32>()?;
-                let points = self
-                    .gql
-                    .get_channel_points(&[s.info.channel_name.as_str()])
-                    .await?;
-                self.analytics
-                    .execute(|analytics| {
-                        let entry_id = analytics.last_prediction_id(channel_id, event_id)?;
-                        analytics.insert_points(
-                            channel_id,
-                            points[0].0 as i32,
-                            PointsInfo::Prediction(event_id.to_owned(), entry_id),
-                        )?;
+            let channel_id = streamer.as_str().parse::<i32>()?;
+            let points = self
+                .gql
+                .get_channel_points(&[s.info.channel_name.as_str()])
+                .await?;
+            self.analytics
+                .execute(|analytics| {
+                    let entry_id = analytics.last_prediction_id(channel_id, event_id)?;
+                    analytics.insert_points(
+                        channel_id,
+                        points[0].0 as i32,
+                        PointsInfo::Prediction(event_id.to_owned(), entry_id),
+                    )?;
 
-                        analytics.place_bet(event_id, channel_id, &outcome_id, points_to_bet)
-                    })
-                    .await?;
-            }
+                    analytics.place_bet(event_id, channel_id, &outcome_id, points_to_bet)
+                })
+                .await?;
         }
         Ok(())
     }
 
-    #[cfg(feature = "web_api")]
     pub fn restart_live_watcher(&mut self) {
         if let Some(s) = self.live_runner.take() {
             s.abort();
@@ -505,6 +478,7 @@ impl PubSub {
             self.events_tx.clone(),
             channels,
             self.gql.clone(),
+            self.base_url.clone(),
         ));
 
         self.live_runner.replace(live_runner);
@@ -801,47 +775,36 @@ async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>, gql: gql::Client) 
 
         let points = gql.get_channel_points(&channel_names).await?;
         {
-            #[cfg(feature = "analytics")]
             let mut points_value;
-            #[cfg(feature = "analytics")]
             let mut points_info = PointsInfo::Watching;
 
             let mut writer = pubsub.write().await;
             for (idx, (id, _)) in streamer.iter().enumerate() {
-                #[cfg(feature = "analytics")]
-                {
-                    points_value = points[idx].0;
-                }
+                points_value = points[idx].0;
                 if let Some(s) = writer.streamers.get_mut(id) {
                     s.points = points[idx].0;
                     s.last_points_refresh = Instant::now();
                     if let Some(claim_id) = &points[idx].1 {
                         info!("Claiming community points bonus {}", s.info.channel_name);
                         let claimed_points = gql.claim_points(id.as_str(), claim_id).await?;
-                        #[cfg(feature = "analytics")]
-                        {
-                            points_value = s.points;
-                            points_info = PointsInfo::CommunityPointsClaimed;
-                        }
+                        points_value = s.points;
+                        points_info = PointsInfo::CommunityPointsClaimed;
                         s.points = claimed_points;
                         s.last_points_refresh = Instant::now();
                     }
                 }
 
-                #[cfg(feature = "analytics")]
-                {
-                    let channel_id = id.as_str().parse::<i32>()?;
-                    writer
-                        .analytics
-                        .execute(|analytics| {
-                            analytics.insert_points_if_updated(
-                                channel_id,
-                                points_value as i32,
-                                points_info.clone(),
-                            )
-                        })
-                        .await?;
-                }
+                let channel_id = id.as_str().parse::<i32>()?;
+                writer
+                    .analytics
+                    .execute(|analytics| {
+                        analytics.insert_points_if_updated(
+                            channel_id,
+                            points_value as i32,
+                            points_info.clone(),
+                        )
+                    })
+                    .await?;
             }
         }
         Ok(())
@@ -867,18 +830,15 @@ mod test {
         types::Timestamp,
     };
 
-    use crate::{
+    use common::{
         config::{
             strategy::{DefaultPrediction, DetailedOdds, Strategy},
             PredictionConfig, StreamerConfig,
         },
-        pubsub::prediction_logic,
         types::*,
     };
 
-    // For debugging
-    // color_eyre::install()?;
-    // env_logger::init();
+    use crate::pubsub::prediction_logic;
 
     fn outcome_from(id: u32, points: i64, users: i64) -> Outcome {
         Outcome {
@@ -934,7 +894,7 @@ mod test {
 
     #[tokio::test]
     async fn detailed_strategy_default() -> Result<()> {
-        use crate::config::strategy as s;
+        use common::config::strategy as s;
         let mut streamer = get_prediction();
         {
             let pred = streamer.predictions.get_mut("pred-key-1").unwrap();
@@ -1017,7 +977,7 @@ mod test {
 
     #[tokio::test]
     async fn detailed_strategy_high_odds() -> Result<()> {
-        use crate::config::strategy as s;
+        use common::config::strategy as s;
         let mut streamer = get_prediction();
         {
             let pred = streamer.predictions.get_mut("pred-key-1").unwrap();
