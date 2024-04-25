@@ -7,6 +7,7 @@ use flume::unbounded;
 use tokio::sync::RwLock;
 use tokio::{fs, spawn};
 use tracing::info;
+use tracing_subscriber::fmt::format::{Compact, DefaultFields};
 use tracing_subscriber::fmt::time::ChronoLocal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -40,6 +41,19 @@ struct Args {
 
 const BASE_URL: &str = "https://twitch.tv";
 
+fn get_layer<S>(
+    layer: tracing_subscriber::fmt::Layer<S>,
+) -> tracing_subscriber::fmt::Layer<
+    S,
+    DefaultFields,
+    tracing_subscriber::fmt::format::Format<Compact, ChronoLocal>,
+> {
+    layer
+        .with_timer(ChronoLocal::new("%v %k:%M:%S %z".to_owned()))
+        .with_target(false)
+        .compact()
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
@@ -51,19 +65,14 @@ async fn main() -> Result<()> {
             EnvFilter::new(format!("twitch_points_miner={log_level}"))
                 .add_directive(format!("tower_http::trace={log_level}").parse()?),
         )
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_timer(ChronoLocal::new("%v %k:%M:%S %z".to_owned()))
-                .with_target(false)
-                .compact(),
-        );
+        .with(get_layer(tracing_subscriber::fmt::layer()));
 
     let file_appender = tracing_appender::rolling::never(".", "twitch-points-miner.log");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
     if args.log_to_file {
         tracing_opts
-            .with(tracing_subscriber::fmt::layer().with_writer(non_blocking))
+            .with(get_layer(tracing_subscriber::fmt::layer()).with_writer(non_blocking))
             .init();
     } else {
         tracing_opts.init();
