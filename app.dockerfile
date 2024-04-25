@@ -27,6 +27,7 @@ RUN RUSTFLAGS="$RUSTFLAGS" cargo build --release --target x86_64-unknown-linux-m
 FROM busybox AS runtime
 COPY --from=frontend /dist /dist
 WORKDIR /
+ENV LOG=info
 COPY --from=builder /tpm/target/x86_64-unknown-linux-musl/release/twitch-points-miner /app
 EXPOSE 3000
 ENTRYPOINT ["/app"]

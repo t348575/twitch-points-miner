@@ -70,7 +70,7 @@ pub enum Variables {
     JoinRaid(JoinRaid),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Client {
     access_token: String,
     url: String,

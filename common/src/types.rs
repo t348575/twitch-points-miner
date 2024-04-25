@@ -16,14 +16,26 @@ pub struct StreamerState {
     pub last_points_refresh: Instant,
 }
 
-#[derive(Debug, Clone, Serialize)]
+impl Default for StreamerState {
+    fn default() -> Self {
+        Self {
+            info: Default::default(),
+            predictions: Default::default(),
+            config: Default::default(),
+            points: Default::default(),
+            last_points_refresh: Instant::now(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct StreamerConfigRef {
     pub _type: ConfigTypeRef,
     pub config: StreamerConfig,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct StreamerConfigRefWrapper(pub Arc<std::sync::RwLock<StreamerConfigRef>>);
 
 impl Serialize for StreamerConfigRefWrapper {
@@ -62,10 +74,11 @@ impl StreamerConfigRefWrapper {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub enum ConfigTypeRef {
     Preset(String),
+    #[default]
     Specific,
 }
 

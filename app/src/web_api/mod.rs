@@ -1,16 +1,24 @@
-use std::sync::Arc;
+use std::{io::SeekFrom, path::Path, sync::Arc};
 
 use axum::{
-    extract::State, http::StatusCode, response::IntoResponse, routing::get, serve::Serve, Json,
-    Router,
+    extract::State,
+    http::StatusCode,
+    response::{Html, IntoResponse},
+    routing::get,
+    serve::Serve,
+    Json, Router,
 };
-use color_eyre::eyre::{Context, Report};
+use color_eyre::eyre::{Context, Report, Result};
 use common::{
     config::{filters::Filter, strategy::*, PredictionConfig, StreamerConfig},
     twitch::auth::Token,
     types::*,
 };
-use tokio::sync::RwLock;
+use tokio::{
+    fs::File,
+    io::{AsyncReadExt, AsyncSeekExt, BufReader},
+    sync::RwLock,
+};
 use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 use twitch_api::{
     pubsub::predictions::Event,
@@ -68,7 +76,8 @@ pub async fn get_api_server(
     #[derive(OpenApi)]
     #[openapi(
         paths(
-            app_state
+            app_state,
+            get_logs
         ),
         components(
             schemas(
@@ -120,6 +129,7 @@ pub async fn get_api_server(
         .nest("/predictions", predictions.0)
         .nest("/config", config.0)
         .nest("/analytics", analytics)
+        .route("/logs", get(get_logs))
         .route("/", get(app_state).with_state(pubsub.clone()));
 
     let router = Router::new()
@@ -215,4 +225,98 @@ impl PubSub {
         .map_err(ApiError::internal_error)?;
         Ok(())
     }
+}
+
+async fn read_last_n_lines(file: &mut File, mut n: usize) -> Result<Vec<String>> {
+    let mut lines = Vec::new();
+
+    let file_size = file.metadata().await?.len();
+    let mut file = BufReader::new(file);
+
+    let mut prev_buffer: Vec<u8> = Vec::new();
+
+    file.seek(SeekFrom::End(0)).await?;
+    while n > 0 && file_size > 0 {
+        file.seek(SeekFrom::Current(-1024)).await?;
+        let mut buffer = [0; 1024];
+        let bytes_read = file.read(&mut buffer).await?;
+
+        let mut temp_buffer = buffer[0..bytes_read].to_vec();
+        temp_buffer.append(&mut prev_buffer);
+        prev_buffer = temp_buffer;
+        if !buffer[0..bytes_read].contains(&('\n' as u8)) {
+            file.seek(SeekFrom::Current((-1 * bytes_read as i64) - 1))
+                .await?;
+            continue;
+        }
+
+        let raw_lines = prev_buffer
+            .split(|x| *x == '\n' as u8)
+            .map(|x| x.to_vec())
+            .rev()
+            .collect::<Vec<_>>();
+
+        let size = raw_lines.len();
+        for (idx, line) in raw_lines.into_iter().enumerate() {
+            if n == 0 {
+                break;
+            }
+
+            let line = String::from_utf8(line.to_vec())?;
+            if !line.trim().is_empty() {
+                if idx + 1 == size {
+                    prev_buffer = line.as_bytes().to_vec();
+                } else {
+                    lines.push(format!("{line}\n"));
+                }
+                n -= 1;
+            }
+        }
+        file.seek(SeekFrom::Current((-1 * bytes_read as i64) - 1))
+            .await?;
+
+        if file.stream_position().await? == 0 {
+            tracing::debug!("Reached start of file, stopping {n}");
+            break;
+        }
+    }
+
+    lines.reverse();
+    Ok(lines)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/logs",
+    responses(
+        (status = 200, description = "Get last logs as rendered html", body = String, content_type = "text/html"),
+    )
+)]
+async fn get_logs() -> Result<Html<String>, ApiError> {
+    if !Path::new("twitch-points-miner.log").exists() {
+        return Ok(Html(
+            "Logging to file not enabled, use the --log-to-file flag!".to_string(),
+        ));
+    }
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .read(true)
+        .open("twitch-points-miner.log")
+        .await
+        .context("Opening log file")
+        .map_err(ApiError::internal_error)?;
+
+    let text = read_last_n_lines(&mut file, 30)
+        .await
+        .context("Grabbing log lines")
+        .map_err(ApiError::internal_error)?
+        .into_iter()
+        .filter(|x| !x.trim().is_empty())
+        .filter(|x| !x.starts_with('\n'))
+        .collect::<Vec<_>>()
+        .join("");
+    let html = ansi_to_html::convert(&text)
+        .context("Rendering log lines")
+        .map_err(ApiError::internal_error)?;
+    Ok(Html(html))
 }

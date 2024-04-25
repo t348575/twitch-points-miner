@@ -101,18 +101,16 @@ mod test {
     use rstest::rstest;
     use serde_json::json;
     use test::gql::{Stream, User};
-    use testcontainers::{Container, GenericImage};
     use tokio::{spawn, time::timeout};
 
-    use crate::test::container;
+    use crate::test::{container, TestContainer};
 
     use super::*;
 
     #[rstest]
     #[tokio::test]
     #[rustfmt::skip]
-    async fn live_sequence(container: Container<'_, GenericImage>) {
-        env_logger::init();
+    async fn live_sequence(container: TestContainer<'_>) {
         let gql_test = Client::new(
             "".to_owned(),
             format!("http://localhost:{}/gql", container.get_host_port_ipv4(3000)),

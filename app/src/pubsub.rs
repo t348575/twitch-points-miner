@@ -174,6 +174,26 @@ impl PubSub {
         })
     }
 
+    #[cfg(test)]
+    pub fn empty(events_tx: Sender<Events>) -> Self {
+        Self {
+            events_tx,
+            analytics: Arc::new(crate::analytics::AnalyticsWrapper::empty()),
+            config: Default::default(),
+            config_path: Default::default(),
+            streamers: Default::default(),
+            simulate: Default::default(),
+            token: Default::default(),
+            spade_url: Default::default(),
+            user_id: Default::default(),
+            user_name: Default::default(),
+            configs: Default::default(),
+            gql: Default::default(),
+            base_url: Default::default(),
+            live_runner: Default::default(),
+        }
+    }
+
     pub fn get_by_name(&self, name: &str) -> Option<&StreamerState> {
         self.streamers
             .values()
@@ -214,7 +234,7 @@ impl PubSub {
             tx.clone(),
             token.access_token.clone(),
         ));
-        spawn(view_points(pubsub.clone(), events_rx));
+        spawn(watch_streams(pubsub.clone(), events_rx));
         spawn(update_and_claim_points(pubsub.clone(), gql.clone()));
 
         info!("Connected to pubsub");
@@ -644,7 +664,7 @@ pub async fn prediction_logic(
     Ok(None)
 }
 
-async fn view_points(pubsub: Arc<RwLock<PubSub>>, events_rx: Receiver<Events>) {
+async fn watch_streams(pubsub: Arc<RwLock<PubSub>>, events_rx: Receiver<Events>) {
     sleep(Duration::from_secs(5)).await;
 
     let use_watch_streak = {
@@ -821,13 +841,22 @@ async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>, gql: gql::Client) 
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, time::Instant};
+    use std::{
+        collections::HashMap,
+        sync::Arc,
+        time::{Duration, Instant},
+    };
 
     use chrono::Local;
     use color_eyre::Result;
+    use flume::unbounded;
+    use futures::StreamExt;
+    use rstest::rstest;
+    use serde_json::json;
+    use tokio::{spawn, sync::RwLock, time::timeout};
     use twitch_api::{
         pubsub::predictions::{Event, Outcome},
-        types::Timestamp,
+        types::{Timestamp, UserId},
     };
 
     use common::{
@@ -835,10 +864,20 @@ mod test {
             strategy::{DefaultPrediction, DetailedOdds, Strategy},
             PredictionConfig, StreamerConfig,
         },
+        twitch::{
+            gql::{Client, Stream, User},
+            traverse_json,
+        },
         types::*,
     };
 
-    use crate::pubsub::prediction_logic;
+    use crate::{
+        live,
+        pubsub::prediction_logic,
+        test::{container, TestContainer},
+    };
+
+    use super::PubSub;
 
     fn outcome_from(id: u32, points: i64, users: i64) -> Outcome {
         Outcome {
@@ -1036,6 +1075,80 @@ mod test {
             ))
         );
 
+        Ok(())
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[rustfmt::skip]
+    async fn event_listener(container: TestContainer<'_>) -> Result<()> {
+        let gql_test = Client::new(
+            "".to_owned(),
+            format!("http://localhost:{}/gql", container.get_host_port_ipv4(3000)),
+        );
+        let metadata_uri = format!("http://localhost:{}/streamer_metadata", container.get_host_port_ipv4(3000));
+        let spade_uri = format!("http://localhost:{}/base", container.get_host_port_ipv4(3000));
+
+        let (events_tx, events_rx) = unbounded();
+        let (ws_tx, ws_rx) = unbounded();
+        let mut pubsub = PubSub::empty(events_tx.clone());
+        pubsub.streamers = HashMap::from([
+            (UserId::from_static("1"), StreamerState::default()),
+        ]);
+
+        let user_a = User {
+            id: UserId::from_static("1"),
+            stream: Some(Stream {
+                id: UserId::from_static("2"),
+                game: None,
+            }),
+        };
+
+        let mock = reqwest::Client::new();
+        mock.post(&metadata_uri)
+            .json(&json!({ "1": ["a", user_a] })).send().await.unwrap();
+
+        let pubsub = Arc::new(RwLock::new(pubsub));
+        let live = spawn(live::run(events_tx, vec![(UserId::from_static("1"), StreamerInfo::with_channel_name("a"))], gql_test, spade_uri));
+        let listener = spawn(super::event_listener(pubsub.clone(), events_rx, ws_tx, "".to_owned()));
+
+        let res = timeout(Duration::from_secs(1), ws_rx.stream().take(3).collect::<Vec<_>>()).await;
+
+        assert!(res.is_ok());
+        let res = res.unwrap();
+        assert_eq!(res.len(), 3);
+        for item in res {
+            let mut v = serde_json::from_str::<serde_json::Value>(&item).expect("Deserialize JSON");
+            let item = traverse_json(&mut v, ".type");
+            assert!(item.is_some());
+            let item = item.unwrap();
+            assert!(item.is_string());
+            assert_eq!(item.as_str().unwrap(), "LISTEN");
+        }
+
+        let user_a = User {
+            id: UserId::from_static("1"),
+            stream: None,
+        };
+        mock.post(&metadata_uri)
+            .json(&json!({ "1": ["a", user_a] })).send().await.unwrap();
+
+        let res = timeout(Duration::from_secs(1), ws_rx.stream().take(3).collect::<Vec<_>>()).await;
+
+        assert!(res.is_ok());
+        let res = res.unwrap();
+        assert_eq!(res.len(), 3);
+        for item in res {
+            let mut v = serde_json::from_str::<serde_json::Value>(&item).expect("Deserialize JSON");
+            let item = traverse_json(&mut v, ".type");
+            assert!(item.is_some());
+            let item = item.unwrap();
+            assert!(item.is_string());
+            assert_eq!(item.as_str().unwrap(), "UNLISTEN");
+        }
+
+        live.abort();
+        listener.abort();
         Ok(())
     }
 }

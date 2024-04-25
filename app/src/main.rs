@@ -7,6 +7,7 @@ use flume::unbounded;
 use tokio::sync::RwLock;
 use tokio::{fs, spawn};
 use tracing::info;
+use tracing_subscriber::fmt::time::ChronoLocal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 mod analytics;
@@ -52,8 +53,9 @@ async fn main() -> Result<()> {
         )
         .with(
             tracing_subscriber::fmt::layer()
+                .with_timer(ChronoLocal::new("%v %k:%M:%S %z".to_owned()))
                 .with_target(false)
-                .compact(),
+                .compact()
         );
 
     let file_appender = tracing_appender::rolling::never(".", "twitch-points-miner.log");
@@ -126,7 +128,7 @@ async fn main() -> Result<()> {
             &c.analytics_db.unwrap_or("analytics.db".to_owned()),
         )?)
     } else {
-        Arc::new(analytics::AnalyticsWrapper(tokio::sync::Mutex::new(None)))
+        Arc::new(analytics::AnalyticsWrapper::empty())
     };
 
     let channels = channels.into_iter().flatten().collect::<Vec<_>>();
@@ -166,7 +168,7 @@ async fn main() -> Result<()> {
         )
         .await?;
 
-    println!("Everything ok, starting twitch pubsub");
+    info!("Everything ok, starting twitch pubsub");
     let (events_tx, events_rx) = unbounded::<live::Events>();
     let live = spawn(live::run(
         events_tx.clone(),
@@ -202,7 +204,7 @@ async fn main() -> Result<()> {
         gql,
     ));
 
-    println!("Starting web api!");
+    info!("Starting web api!");
 
     let axum_server = web_api::get_api_server(args.address, pubsub_data, Arc::new(token)).await;
 
@@ -251,6 +253,8 @@ pub mod test {
     fn docker() -> Cli {
         Cli::default()
     }
+
+    pub type TestContainer<'a> = Container<'a, GenericImage>;
 
     #[fixture]
     pub fn container<'a>(docker: &'a Cli) -> Container<'a, GenericImage> {

@@ -10,7 +10,7 @@ const FIREFOX_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:84.0) Gecko/20100101 Firefox/84.0";
 const CHROME_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36";
 
-fn traverse_json<'a>(
+pub fn traverse_json<'a>(
     mut value: &'a mut serde_json::Value,
     mut path: &str,
 ) -> Option<&'a mut serde_json::Value> {

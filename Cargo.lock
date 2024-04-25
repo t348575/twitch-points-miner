@@ -62,6 +62,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ansi-to-html"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d73c455ae09fa2223a75114789f30ad605e9e297f79537953523366c05995f5f"
+dependencies = [
+ "regex",
+ "thiserror",
+]
+
+[[package]]
 name = "anstream"
 version = "0.6.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2512,6 +2522,7 @@ version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ad0f048c97dbd9faa9b7df56362b8ebcaa52adb06b498c050d2f4e32f90a7a8b"
 dependencies = [
+ "chrono",
  "matchers",
  "nu-ansi-term",
  "once_cell",
@@ -2555,6 +2566,7 @@ dependencies = [
 name = "twitch-points-miner"
 version = "0.1.8"
 dependencies = [
+ "ansi-to-html",
  "axum",
  "chrono",
  "clap",

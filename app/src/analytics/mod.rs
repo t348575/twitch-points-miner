@@ -48,6 +48,10 @@ impl AnalyticsWrapper {
         Ok(AnalyticsWrapper(Mutex::new(Some(Analytics::new(url)?))))
     }
 
+    pub fn empty() -> Self {
+        Self(tokio::sync::Mutex::new(None))
+    }
+
     pub async fn execute<F, R>(&self, func: F) -> Result<R, AnalyticsError>
     where
         F: FnOnce(&mut Analytics) -> Result<R, AnalyticsError>,
