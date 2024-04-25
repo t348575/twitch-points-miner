@@ -1,58 +1,11 @@
-[package]
-name = "twitch-points-miner"
-version = "0.1.8"
-edition = "2021"
+[workspace]
+members = [
+    "app",
+    "common",
+    "mock"
+]
 resolver = "2"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1", features = ["full"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
-http = "1.1.0"
-twitch_api = { features = ["pubsub", "unsupported"], git = "https://github.com/t348575/twitch_api", branch = "hidden_pubsubs" }
-futures = "0.3"
-clap = { version = "4.5", features = ["derive"] }
-color-eyre = "0.6"
-rand = "0.8"
-validator = { version = "0.17", features = ["derive"], git = "https://github.com/Keats/validator", rev = "1dd03ed" }
-serde_yaml = "0.9"
-chrono = { version = "0.4", features = ["serde"] }
-axum = { version = "0.7", optional = true, features = ["macros"] }
-dialoguer = "0.11"
-base64 = "0.22"
-libsqlite3-sys = { version = "0.28.0", features = ["bundled"], optional = true }
-diesel = { version = "2", features = ["sqlite", "chrono"], optional = true }
-diesel_migrations = { version = "2", features = ["sqlite"], optional = true }
-thiserror = "1"
-utoipa = { version = "4", features = ["axum_extras", "chrono"], optional = true }
-utoipa-swagger-ui = { version = "6", features = ["axum"], optional = true }
-tower-http = { version = "0.5", features = ["trace", "cors", "fs"], optional = true }
-indexmap = { version = "2.2", features = ["serde"] }
-tracing-appender = "0.2.3"
-flume = "0.11.0"
-
-[features]
-web_api = ["dep:axum", "dep:utoipa", "dep:utoipa-swagger-ui", "twitch_api/utoipa", "dep:tower-http"]
-analytics = ["dep:diesel", "dep:diesel_migrations", "dep:libsqlite3-sys"]
-
-[dev-dependencies]
-twitch_api = { features = ["pubsub", "unsupported", "time"], git = "https://github.com/t348575/twitch_api", branch = "hidden_pubsubs" }
-env_logger = "0.11"
 
 [profile.release]
 opt-level = 'z'
 strip = true
-
-[[bin]]
-name = "twitch-points-miner"
-path = "src/main.rs"
-
-# [[bin]]
-# name = "default-config"
-# path = "src/default_config.rs"

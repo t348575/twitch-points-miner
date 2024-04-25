@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
 use axum::{extract::State, routing::post, Extension, Json, Router};
+use common::twitch::auth::Token;
 use serde::Deserialize;
 use utoipa::ToSchema;
 
 use crate::{
     analytics::{model::Outcome, TimelineResult},
     make_paths,
-    twitch::auth::Token,
 };
 
 use super::{ApiError, ApiState, RouterBuild};

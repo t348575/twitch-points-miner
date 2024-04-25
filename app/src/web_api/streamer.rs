@@ -7,20 +7,19 @@ use axum::{
     Extension, Json, Router,
 };
 
-#[cfg(feature = "analytics")]
 use color_eyre::eyre::Context;
+use common::{
+    config::ConfigType,
+    twitch::{auth::Token, gql},
+    types::*,
+};
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use twitch_api::{pubsub::predictions::Event, types::UserId};
 use utoipa::ToSchema;
 
-use crate::{
-    config::ConfigType,
-    make_paths, sub_error,
-    twitch::{auth::Token, gql},
-    types::*,
-};
+use crate::{make_paths, sub_error};
 
 use super::{ApiError, ApiState, RouterBuild, WebApiError};
 
@@ -132,17 +131,18 @@ struct MineStreamer {
 async fn mine_streamer(
     State(data): State<ApiState>,
     Path(channel_name): Path<String>,
-    Extension(token): Extension<Arc<Token>>,
     Json(payload): Json<MineStreamer>,
 ) -> Result<(), ApiError> {
-    let res = gql::streamer_metadata(&[&channel_name], &token.access_token)
+    let mut writer = data.write().await;
+    let res = writer
+        .gql
+        .streamer_metadata(&[&channel_name])
         .await
         .map_err(ApiError::twitch_api_error)?;
     if res.is_empty() || (!res.is_empty() && res[0].is_none()) {
         return Err(ApiError::StreamerDoesNotExist);
     }
 
-    let mut writer = data.write().await;
     if writer
         .streamers
         .contains_key(&UserId::from(channel_name.clone()))
@@ -155,13 +155,15 @@ async fn mine_streamer(
     let streamer = res[0].clone().unwrap();
     async fn rollback_steps(
         channel_name: &str,
-        access_token: &str,
+        gql: &gql::Client,
     ) -> Result<(u32, Vec<(Event, bool)>), ApiError> {
-        let points = gql::get_channel_points(&[channel_name], access_token)
+        let points = gql
+            .get_channel_points(&[channel_name])
             .await
             .map_err(ApiError::twitch_api_error)?[0]
             .0;
-        let active_predictions = gql::channel_points_context(&[channel_name], access_token)
+        let active_predictions = gql
+            .channel_points_context(&[channel_name])
             .await
             .map_err(ApiError::twitch_api_error)?[0]
             .clone();
@@ -169,16 +171,15 @@ async fn mine_streamer(
     }
 
     // rollback if any config was added, and an error occurred after
-    let (points, active_predictions) =
-        match rollback_steps(&channel_name, &token.access_token).await {
-            Ok(s) => s,
-            Err(err) => {
-                if let ConfigType::Specific(_) = &payload.config {
-                    writer.configs.remove(&channel_name);
-                }
-                return Err(err);
+    let (points, active_predictions) = match rollback_steps(&channel_name, &writer.gql).await {
+        Ok(s) => s,
+        Err(err) => {
+            if let ConfigType::Specific(_) = &payload.config {
+                writer.configs.remove(&channel_name);
             }
-        };
+            return Err(err);
+        }
+    };
 
     writer.config.streamers.insert(channel_name, payload.config);
     writer.streamers.insert(
@@ -198,30 +199,27 @@ async fn mine_streamer(
     writer.save_config("Mine streamer").await?;
     writer.restart_live_watcher();
 
-    #[cfg(feature = "analytics")]
-    {
-        let id = streamer
-            .0
-            .as_str()
-            .parse()
-            .context("Parse streamer id")
-            .map_err(ApiError::internal_error)?;
-        let inserted = writer
+    let id = streamer
+        .0
+        .as_str()
+        .parse()
+        .context("Parse streamer id")
+        .map_err(ApiError::internal_error)?;
+    let inserted = writer
+        .analytics
+        .execute(|analytics| analytics.insert_streamer(id, streamer.1.channel_name))
+        .await?;
+    if inserted {
+        writer
             .analytics
-            .execute(|analytics| analytics.insert_streamer(id, streamer.1.channel_name))
+            .execute(|analytics| {
+                analytics.insert_points(
+                    id,
+                    points as i32,
+                    crate::analytics::model::PointsInfo::FirstEntry,
+                )
+            })
             .await?;
-        if inserted {
-            writer
-                .analytics
-                .execute(|analytics| {
-                    analytics.insert_points(
-                        id,
-                        points as i32,
-                        crate::analytics::model::PointsInfo::FirstEntry,
-                    )
-                })
-                .await?;
-        }
     }
 
     Ok(())

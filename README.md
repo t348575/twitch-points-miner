@@ -16,6 +16,8 @@ A very lightweight twitch points miner, using only a few MB of ram, inspired by 
 ## Configuration
 Check [example.config.yaml](example.config.yaml) for an example configuration.
 
+For a complete list of all configuration possibilities, check [common/src/config](common/src/config).
+
 Use the log level `info` for adequate information. Use `debug` for detailed logs, or if you feel a bug is present.
 
 ## Docker image
@@ -29,7 +31,6 @@ docker run -i -t -v ./data:/data t348575/twitch-points-miner --token /data/token
 ```
 Once it is running and the login flow is complete, CTRL+C then just attach the tokens file in subsequent runs
 
-**Note**: The image comes with the `web_api` and `analytics` feature enabled.
 **Note**: Don't forget to add /analytics.db as a docker volume, or specify the analytics database path in the config file.
 
 ## Docker compose
@@ -40,14 +41,14 @@ services:
     container_name: twitch-points-miner
     image: t348575/twitch-points-miner:latest
     volumes:
-      - ./tokens.json:/tokens.json
+      - ./data/tokens.json:/tokens.json
       - ./config.yaml:/config.yaml
       - ./analytics.db:/analytics.db
       - ./twitch-points-miner.log:/twitch-points-miner.log
     command:
       - --log-to-file
     ports:
-      - 3000:3000
+      - 3000:3000 # Web UI port
     environment:
       - LOG=info
 ```
@@ -58,11 +59,6 @@ Has not been tested on windows, but should work fine
 ## Building
 ```
 cargo build --release
-```
-
-* Build with the feature `web_api` to enable the REST API server for management, and with the `analytics` feature to enable storing points and prediction information in an sqlite database.
-```
-cargo build --release --features web_api,analytics
 ```
 
 ## Web UI screenshots

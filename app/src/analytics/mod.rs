@@ -31,7 +31,6 @@ pub enum AnalyticsError {
     DbInit(Box<dyn std::error::Error + Send + Sync>),
 }
 
-#[cfg(feature = "web_api")]
 impl axum::response::IntoResponse for AnalyticsError {
     fn into_response(self) -> axum::response::Response {
         format!("{self:#?}").into_response()
@@ -47,6 +46,10 @@ impl AnalyticsError {
 impl AnalyticsWrapper {
     pub fn new(url: &str) -> Result<AnalyticsWrapper, AnalyticsError> {
         Ok(AnalyticsWrapper(Mutex::new(Some(Analytics::new(url)?))))
+    }
+
+    pub fn empty() -> Self {
+        Self(tokio::sync::Mutex::new(None))
     }
 
     pub async fn execute<F, R>(&self, func: F) -> Result<R, AnalyticsError>
@@ -214,7 +217,6 @@ impl Analytics {
         Ok(())
     }
 
-    #[cfg(feature = "web_api")]
     pub fn timeline(
         &mut self,
         from: NaiveDateTime,
@@ -255,7 +257,6 @@ impl Analytics {
         Ok(entry_id)
     }
 
-    #[cfg(feature = "web_api")]
     pub fn get_live_prediction(
         &mut self,
         c_id: i32,
@@ -282,8 +283,7 @@ impl Analytics {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct TimelineResult {
     point: Point,
     prediction: Option<Prediction>,

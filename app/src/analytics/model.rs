@@ -28,9 +28,9 @@ pub struct Streamer {
     Serialize,
     Deserialize,
     QueryableByName,
+    utoipa::ToSchema,
 )]
 #[diesel(table_name = super::schema::points)]
-#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct Point {
     pub channel_id: i32,
     pub points_value: i32,
@@ -39,9 +39,10 @@ pub struct Point {
     pub created_at: NaiveDateTime,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, FromSqlRow, AsExpression)]
+#[derive(
+    Debug, Clone, Deserialize, Serialize, PartialEq, FromSqlRow, AsExpression, utoipa::ToSchema,
+)]
 #[diesel(sql_type = Text)]
-#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub enum PointsInfo {
     FirstEntry,
     Watching,
@@ -50,14 +51,16 @@ pub enum PointsInfo {
     Prediction(String, i32),
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, FromSqlRow, AsExpression)]
+#[derive(
+    Debug, Clone, Deserialize, Serialize, PartialEq, FromSqlRow, AsExpression, utoipa::ToSchema,
+)]
 #[diesel(sql_type = Text)]
-#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct Outcomes(pub Vec<Outcome>);
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, FromSqlRow, AsExpression)]
+#[derive(
+    Debug, Clone, Deserialize, Serialize, PartialEq, FromSqlRow, AsExpression, utoipa::ToSchema,
+)]
 #[diesel(sql_type = Text)]
-#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct Outcome {
     pub id: String,
     pub title: String,
@@ -65,17 +68,19 @@ pub struct Outcome {
     pub total_users: i64,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, FromSqlRow, AsExpression)]
+#[derive(
+    Debug, Clone, Deserialize, Serialize, PartialEq, FromSqlRow, AsExpression, utoipa::ToSchema,
+)]
 #[diesel(sql_type = Text)]
-#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub enum PredictionBetWrapper {
     None,
     Some(PredictionBet),
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, FromSqlRow, AsExpression)]
+#[derive(
+    Debug, Clone, Deserialize, Serialize, PartialEq, FromSqlRow, AsExpression, utoipa::ToSchema,
+)]
 #[diesel(sql_type = Text)]
-#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct PredictionBet {
     pub outcome_id: String,
     pub points: u32,
@@ -91,9 +96,9 @@ pub struct PredictionBet {
     Serialize,
     Deserialize,
     QueryableByName,
+    utoipa::ToSchema,
 )]
 #[diesel(table_name = super::schema::predictions, primary_key(id))]
-#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct Prediction {
     pub channel_id: i32,
     pub prediction_id: String,

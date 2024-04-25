@@ -8,6 +8,7 @@
   import Predictions from "./Predictions.svelte";
   import { onMount } from "svelte";
   import { get_streamers, streamers } from "./common";
+  import Logs from "./Logs.svelte";
 
   onMount(async () => {
     streamers.set(await get_streamers());
@@ -21,6 +22,7 @@
       <Tabs.Trigger value="Points">Points</Tabs.Trigger>
       <Tabs.Trigger value="Predictions">Predictions</Tabs.Trigger>
       <Tabs.Trigger value="Setup">Setup</Tabs.Trigger>
+      <Tabs.Trigger value="Logs">Logs</Tabs.Trigger>
     </Tabs.List>
     <div class="flex justify-between items-center">
       <div></div>
@@ -48,6 +50,9 @@
     </Tabs.Content>
     <Tabs.Content value="Setup">
       <Setup />
+    </Tabs.Content>
+    <Tabs.Content value="Logs">
+      <Logs />
     </Tabs.Content>
   </Tabs.Root>
 </main>

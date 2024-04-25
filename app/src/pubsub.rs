@@ -9,6 +9,14 @@ use color_eyre::{
     eyre::{eyre, Context, ContextCompat},
     Result,
 };
+use common::{
+    config::{self, filters::filter_matches, strategy, Config, ConfigType, StreamerConfig},
+    tokio_tungstenite::tungstenite::Message,
+    twitch::{api, auth::Token, gql, ws},
+    types::{
+        ConfigTypeRef, StreamerConfigRef, StreamerConfigRefWrapper, StreamerInfo, StreamerState,
+    },
+};
 use flume::{unbounded, Receiver, Sender};
 use futures::StreamExt;
 use indexmap::IndexMap;
@@ -17,10 +25,8 @@ use rand::{
     Rng,
 };
 use serde::Serialize;
-#[cfg(feature = "web_api")]
 use tokio::task::JoinHandle;
 use tokio::{spawn, sync::RwLock, time::sleep};
-use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
 use twitch_api::{
     pubsub::{
@@ -33,20 +39,10 @@ use twitch_api::{
     types::UserId,
 };
 
-use crate::{
-    config::{self, filters::filter_matches, strategy, Config, ConfigType, StreamerConfig},
-    live::Events,
-    twitch::{api, auth::Token, gql, ws},
-    types::{
-        ConfigTypeRef, StreamerConfigRef, StreamerConfigRefWrapper, StreamerInfo, StreamerState,
-    },
-};
-
-#[cfg(feature = "analytics")]
 use crate::analytics::model::{PointsInfo, Prediction};
+use crate::live::Events;
 
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PubSub {
     #[serde(skip)]
     pub config: Config,
@@ -61,13 +57,14 @@ pub struct PubSub {
     pub user_id: String,
     pub user_name: String,
     pub configs: HashMap<String, StreamerConfigRefWrapper>,
-    #[cfg(feature = "web_api")]
+    #[serde(skip)]
+    pub gql: gql::Client,
+    #[serde(skip)]
+    pub base_url: String,
     #[serde(skip)]
     pub live_runner: Option<JoinHandle<Result<()>>>,
-    #[cfg(feature = "web_api")]
     #[serde(skip)]
     pub events_tx: Sender<Events>,
-    #[cfg(feature = "analytics")]
     #[serde(skip)]
     pub analytics: Arc<crate::analytics::AnalyticsWrapper>,
 }
@@ -82,14 +79,13 @@ impl Clone for PubSub {
             user_id: self.user_id.clone(),
             user_name: self.user_name.clone(),
             configs: self.configs.clone(),
-            #[cfg(feature = "web_api")]
             live_runner: None,
-            #[cfg(feature = "web_api")]
             events_tx: self.events_tx.clone(),
-            #[cfg(feature = "analytics")]
             analytics: self.analytics.clone(),
             config: self.config.clone(),
             config_path: self.config_path.clone(),
+            gql: self.gql.clone(),
+            base_url: self.base_url.clone(),
         }
     }
 }
@@ -105,9 +101,11 @@ impl PubSub {
         simulate: bool,
         token: Token,
         user_info: (String, String),
-        #[cfg(feature = "web_api")] live_runner: JoinHandle<Result<()>>,
-        #[cfg(feature = "web_api")] events_tx: Sender<Events>,
-        #[cfg(feature = "analytics")] analytics: Arc<crate::analytics::AnalyticsWrapper>,
+        gql: gql::Client,
+        base_url: &str,
+        live_runner: JoinHandle<Result<()>>,
+        events_tx: Sender<Events>,
+        analytics: Arc<crate::analytics::AnalyticsWrapper>,
     ) -> Result<PubSub> {
         let mut configs = channels
             .iter()
@@ -168,30 +166,46 @@ impl PubSub {
             user_id: user_info.0,
             user_name: user_info.1,
             configs,
-            #[cfg(feature = "web_api")]
             live_runner: Some(live_runner),
-            #[cfg(feature = "web_api")]
             events_tx,
-            #[cfg(feature = "analytics")]
             analytics,
+            gql,
+            base_url: base_url.to_string(),
         })
     }
 
-    #[cfg(feature = "web_api")]
+    #[cfg(test)]
+    pub fn empty(events_tx: Sender<Events>) -> Self {
+        Self {
+            events_tx,
+            analytics: Arc::new(crate::analytics::AnalyticsWrapper::empty()),
+            config: Default::default(),
+            config_path: Default::default(),
+            streamers: Default::default(),
+            simulate: Default::default(),
+            token: Default::default(),
+            spade_url: Default::default(),
+            user_id: Default::default(),
+            user_name: Default::default(),
+            configs: Default::default(),
+            gql: Default::default(),
+            base_url: Default::default(),
+            live_runner: Default::default(),
+        }
+    }
+
     pub fn get_by_name(&self, name: &str) -> Option<&StreamerState> {
         self.streamers
             .values()
             .find(|s| s.info.channel_name == name)
     }
 
-    #[cfg(feature = "web_api")]
     pub fn get_by_name_mut(&mut self, name: &str) -> Option<&mut StreamerState> {
         self.streamers
             .values_mut()
             .find(|s| s.info.channel_name == name)
     }
 
-    #[cfg(feature = "web_api")]
     pub fn get_id_by_name(&self, name: &str) -> Option<&str> {
         for (k, v) in self.streamers.iter() {
             if v.info.channel_name == name {
@@ -205,6 +219,7 @@ impl PubSub {
         token: Token,
         events_rx: Receiver<Events>,
         pubsub: Arc<RwLock<PubSub>>,
+        gql: gql::Client,
     ) -> Result<()> {
         let (write, mut read) = ws::connect_twitch_ws(&token.access_token)
             .await
@@ -219,8 +234,8 @@ impl PubSub {
             tx.clone(),
             token.access_token.clone(),
         ));
-        spawn(view_points(pubsub.clone(), events_rx));
-        spawn(update_and_claim_points(pubsub.clone()));
+        spawn(watch_streams(pubsub.clone(), events_rx));
+        spawn(update_and_claim_points(pubsub.clone(), gql.clone()));
 
         info!("Connected to pubsub");
         while let Some(Ok(msg)) = read.next().await {
@@ -235,7 +250,7 @@ impl PubSub {
                                 .context("Handle pubsub response")?;
                         }
                     }
-                    Err(err) => warn!("Failed to parse message {:#?}", err),
+                    Err(err) => warn!("Failed to parse ws message {:#?}", err),
                 }
             }
         }
@@ -281,9 +296,7 @@ impl PubSub {
                                 "Joining raid for {} to {}",
                                 s.info.channel_name, raid.target_login
                             );
-                            gql::join_raid(&raid.id, &self.token.access_token)
-                                .await
-                                .context("Raiding user")?;
+                            self.gql.join_raid(&raid.id).await.context("Raiding user")?;
                         }
                     }
                 }
@@ -293,7 +306,6 @@ impl PubSub {
         Ok(())
     }
 
-    #[cfg(feature = "analytics")]
     async fn upsert_prediction(&mut self, streamer: &UserId, event: &Event) -> Result<()> {
         let channel_id = streamer.as_str().parse()?;
         let created_at = chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(
@@ -345,57 +357,51 @@ impl PubSub {
             s.predictions
                 .insert(event.id.clone(), (event.clone(), false));
 
-            #[cfg(feature = "analytics")]
             self.upsert_prediction(&streamer, &event).await?;
 
             self.try_prediction(&streamer, &event_id).await?;
         } else if event.ended_at.is_some() {
             info!("Prediction {} ended", event.id);
-            #[cfg(feature = "analytics")]
+            if !self
+                .streamers
+                .get_mut(&streamer)
+                .unwrap()
+                .predictions
+                .contains_key(event.id.as_str())
             {
-                if !self
-                    .streamers
-                    .get_mut(&streamer)
-                    .unwrap()
-                    .predictions
-                    .contains_key(event.id.as_str())
-                {
-                    return Ok(());
-                }
-
-                self.upsert_prediction(&streamer, &event).await?;
-
-                let channel_id = event.channel_id.parse()?;
-                let points_value = gql::get_channel_points(
-                    &[&self.streamers.get(&streamer).unwrap().info.channel_name],
-                    &self.token.access_token,
-                )
-                .await?[0]
-                    .0;
-                let closed_at =
-                    chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(
-                        event.ended_at.unwrap().as_str(),
-                    )?
-                    .naive_local();
-
-                self.analytics
-                    .execute(|analytics| {
-                        let entry_id = analytics.last_prediction_id(channel_id, &event.id)?;
-                        analytics.insert_points(
-                            channel_id,
-                            points_value as i32,
-                            PointsInfo::Prediction(event.id.clone(), entry_id),
-                        )?;
-                        analytics.end_prediction(
-                            &event.id,
-                            channel_id,
-                            event.winning_outcome_id,
-                            event.outcomes.into(),
-                            closed_at,
-                        )
-                    })
-                    .await?;
+                return Ok(());
             }
+
+            self.upsert_prediction(&streamer, &event).await?;
+
+            let channel_id = event.channel_id.parse()?;
+            let points_value = self
+                .gql
+                .get_channel_points(&[&self.streamers.get(&streamer).unwrap().info.channel_name])
+                .await?[0]
+                .0;
+            let closed_at = chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(
+                event.ended_at.unwrap().as_str(),
+            )?
+            .naive_local();
+
+            self.analytics
+                .execute(|analytics| {
+                    let entry_id = analytics.last_prediction_id(channel_id, &event.id)?;
+                    analytics.insert_points(
+                        channel_id,
+                        points_value as i32,
+                        PointsInfo::Prediction(event.id.clone(), entry_id),
+                    )?;
+                    analytics.end_prediction(
+                        &event.id,
+                        channel_id,
+                        event.winning_outcome_id,
+                        event.outcomes.into(),
+                        closed_at,
+                    )
+                })
+                .await?;
 
             self.streamers
                 .get_mut(&streamer)
@@ -410,7 +416,6 @@ impl PubSub {
             let event_id = event.id.clone();
             info!("Prediction {} updated", event.id);
 
-            #[cfg(feature = "analytics")]
             self.upsert_prediction(&streamer, &event).await?;
             if let Some((e, _)) = self
                 .streamers
@@ -433,7 +438,9 @@ impl PubSub {
             return Ok(());
         }
         if s.last_points_refresh.elapsed() > Duration::from_secs(30) {
-            let points = gql::get_channel_points(&[&s.info.channel_name], &self.token.access_token)
+            let points = self
+                .gql
+                .get_channel_points(&[&s.info.channel_name])
                 .await
                 .context("Get channel points")?;
             let s = self.streamers.get_mut(streamer).unwrap();
@@ -449,44 +456,34 @@ impl PubSub {
                 "{}: predicting {}, with points {}",
                 s.info.channel_name, event_id, points_to_bet
             );
-            gql::make_prediction(
-                points_to_bet,
-                event_id,
-                &outcome_id,
-                &self.token.access_token,
-                self.simulate,
-            )
-            .await
-            .context("Make prediction")?;
+            self.gql
+                .make_prediction(points_to_bet, event_id, &outcome_id, self.simulate)
+                .await
+                .context("Make prediction")?;
             let s = self.streamers.get_mut(streamer).unwrap();
             s.predictions.get_mut(event_id).unwrap().1 = true;
 
-            #[cfg(feature = "analytics")]
-            {
-                let channel_id = streamer.as_str().parse::<i32>()?;
-                let points = gql::get_channel_points(
-                    &[s.info.channel_name.as_str()],
-                    &self.token.access_token,
-                )
+            let channel_id = streamer.as_str().parse::<i32>()?;
+            let points = self
+                .gql
+                .get_channel_points(&[s.info.channel_name.as_str()])
                 .await?;
-                self.analytics
-                    .execute(|analytics| {
-                        let entry_id = analytics.last_prediction_id(channel_id, event_id)?;
-                        analytics.insert_points(
-                            channel_id,
-                            points[0].0 as i32,
-                            PointsInfo::Prediction(event_id.to_owned(), entry_id),
-                        )?;
+            self.analytics
+                .execute(|analytics| {
+                    let entry_id = analytics.last_prediction_id(channel_id, event_id)?;
+                    analytics.insert_points(
+                        channel_id,
+                        points[0].0 as i32,
+                        PointsInfo::Prediction(event_id.to_owned(), entry_id),
+                    )?;
 
-                        analytics.place_bet(event_id, channel_id, &outcome_id, points_to_bet)
-                    })
-                    .await?;
-            }
+                    analytics.place_bet(event_id, channel_id, &outcome_id, points_to_bet)
+                })
+                .await?;
         }
         Ok(())
     }
 
-    #[cfg(feature = "web_api")]
     pub fn restart_live_watcher(&mut self) {
         if let Some(s) = self.live_runner.take() {
             s.abort();
@@ -498,9 +495,10 @@ impl PubSub {
             .map(|x| (x.0.clone(), x.1.info.clone()))
             .collect();
         let live_runner = spawn(crate::live::run(
-            Arc::new(self.token.clone()),
             self.events_tx.clone(),
             channels,
+            self.gql.clone(),
+            self.base_url.clone(),
         ));
 
         self.live_runner.replace(live_runner);
@@ -562,7 +560,7 @@ async fn event_listener(
                         }?;
 
                         for item in cmds {
-                            tx.send_async(item).await?;
+                            tx.send_async(item).await.context("Send ws commands")?;
                         }
                     }
                 }
@@ -574,7 +572,7 @@ async fn event_listener(
 
     loop {
         if let Err(err) = inner(&pubsub, &events_rx, &tx, &access_token).await {
-            error!("{err:#?}");
+            error!("event_listener {err:#?}");
         }
     }
 }
@@ -597,7 +595,7 @@ pub async fn prediction_logic(
     let prediction = prediction.unwrap();
     for filter in &c.config.prediction.filters {
         if !filter_matches(&prediction.0, filter, streamer).context("Checking filter")? {
-            info!("Filter matches {:#?}", filter);
+            debug!("Filter matches {:#?}", filter);
             return Ok(None);
         }
     }
@@ -666,7 +664,7 @@ pub async fn prediction_logic(
     Ok(None)
 }
 
-async fn view_points(pubsub: Arc<RwLock<PubSub>>, events_rx: Receiver<Events>) {
+async fn watch_streams(pubsub: Arc<RwLock<PubSub>>, events_rx: Receiver<Events>) {
     sleep(Duration::from_secs(5)).await;
 
     let use_watch_streak = {
@@ -739,7 +737,11 @@ async fn view_points(pubsub: Arc<RwLock<PubSub>>, events_rx: Receiver<Events>) {
                 &spade_url,
                 &access_token,
             )
-            .await?;
+            .await
+            .context(format!(
+                "Could not set viewership {}",
+                streamer.info.channel_name
+            ))?;
         }
 
         *watch_streak = watch_streak.drain(..).filter(|x| x.1 < 60).collect();
@@ -749,7 +751,7 @@ async fn view_points(pubsub: Arc<RwLock<PubSub>>, events_rx: Receiver<Events>) {
     loop {
         if let Err(err) = inner(&pubsub, &mut watch_streak).await {
             if err.to_string() != "Spade URL not set" {
-                error!("{err}");
+                error!("watch_streams {err}");
             }
         }
 
@@ -771,14 +773,10 @@ async fn view_points(pubsub: Arc<RwLock<PubSub>>, events_rx: Receiver<Events>) {
     }
 }
 
-async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>) -> Result<()> {
+async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>, gql: gql::Client) -> Result<()> {
     sleep(Duration::from_secs(5)).await;
-    let access_token = {
-        let reader = pubsub.read().await;
-        reader.token.access_token.clone()
-    };
 
-    async fn inner(pubsub: &Arc<RwLock<PubSub>>, access_token: &str) -> Result<()> {
+    async fn inner(pubsub: &Arc<RwLock<PubSub>>, gql: &gql::Client) -> Result<()> {
         let streamer = {
             let reader = pubsub.read().await;
             reader
@@ -799,58 +797,49 @@ async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>) -> Result<()> {
             return Ok(());
         }
 
-        let points = gql::get_channel_points(&channel_names, access_token).await?;
+        let points = gql
+            .get_channel_points(&channel_names)
+            .await
+            .context("Get channel points")?;
         {
-            #[cfg(feature = "analytics")]
             let mut points_value;
-            #[cfg(feature = "analytics")]
             let mut points_info = PointsInfo::Watching;
 
             let mut writer = pubsub.write().await;
             for (idx, (id, _)) in streamer.iter().enumerate() {
-                #[cfg(feature = "analytics")]
-                {
-                    points_value = points[idx].0;
-                }
+                points_value = points[idx].0;
                 if let Some(s) = writer.streamers.get_mut(id) {
                     s.points = points[idx].0;
                     s.last_points_refresh = Instant::now();
                     if let Some(claim_id) = &points[idx].1 {
                         info!("Claiming community points bonus {}", s.info.channel_name);
-                        let claimed_points =
-                            gql::claim_points(id.as_str(), claim_id, access_token).await?;
-                        #[cfg(feature = "analytics")]
-                        {
-                            points_value = s.points;
-                            points_info = PointsInfo::CommunityPointsClaimed;
-                        }
+                        let claimed_points = gql.claim_points(id.as_str(), claim_id).await?;
+                        points_value = s.points;
+                        points_info = PointsInfo::CommunityPointsClaimed;
                         s.points = claimed_points;
                         s.last_points_refresh = Instant::now();
                     }
                 }
 
-                #[cfg(feature = "analytics")]
-                {
-                    let channel_id = id.as_str().parse::<i32>()?;
-                    writer
-                        .analytics
-                        .execute(|analytics| {
-                            analytics.insert_points_if_updated(
-                                channel_id,
-                                points_value as i32,
-                                points_info.clone(),
-                            )
-                        })
-                        .await?;
-                }
+                let channel_id = id.as_str().parse::<i32>()?;
+                writer
+                    .analytics
+                    .execute(|analytics| {
+                        analytics.insert_points_if_updated(
+                            channel_id,
+                            points_value as i32,
+                            points_info.clone(),
+                        )
+                    })
+                    .await?;
             }
         }
         Ok(())
     }
 
     loop {
-        if let Err(err) = inner(&pubsub, &access_token).await {
-            error!("{err}");
+        if let Err(err) = inner(&pubsub, &gql).await {
+            error!("update_and_claim_points {err}");
         }
 
         sleep(Duration::from_secs(60)).await
@@ -859,27 +848,43 @@ async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>) -> Result<()> {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, time::Instant};
+    use std::{
+        collections::HashMap,
+        sync::Arc,
+        time::{Duration, Instant},
+    };
 
     use chrono::Local;
     use color_eyre::Result;
+    use flume::unbounded;
+    use futures::StreamExt;
+    use rstest::rstest;
+    use serde_json::json;
+    use tokio::{spawn, sync::RwLock, time::timeout};
     use twitch_api::{
         pubsub::predictions::{Event, Outcome},
-        types::Timestamp,
+        types::{Timestamp, UserId},
     };
 
-    use crate::{
+    use common::{
         config::{
             strategy::{DefaultPrediction, DetailedOdds, Strategy},
             PredictionConfig, StreamerConfig,
         },
-        pubsub::prediction_logic,
+        twitch::{
+            gql::{Client, Stream, User},
+            traverse_json,
+        },
         types::*,
     };
 
-    // For debugging
-    // color_eyre::install()?;
-    // env_logger::init();
+    use crate::{
+        live,
+        pubsub::prediction_logic,
+        test::{container, TestContainer},
+    };
+
+    use super::PubSub;
 
     fn outcome_from(id: u32, points: i64, users: i64) -> Outcome {
         Outcome {
@@ -935,7 +940,7 @@ mod test {
 
     #[tokio::test]
     async fn detailed_strategy_default() -> Result<()> {
-        use crate::config::strategy as s;
+        use common::config::strategy as s;
         let mut streamer = get_prediction();
         {
             let pred = streamer.predictions.get_mut("pred-key-1").unwrap();
@@ -1018,7 +1023,7 @@ mod test {
 
     #[tokio::test]
     async fn detailed_strategy_high_odds() -> Result<()> {
-        use crate::config::strategy as s;
+        use common::config::strategy as s;
         let mut streamer = get_prediction();
         {
             let pred = streamer.predictions.get_mut("pred-key-1").unwrap();
@@ -1077,6 +1082,80 @@ mod test {
             ))
         );
 
+        Ok(())
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[rustfmt::skip]
+    async fn event_listener(container: TestContainer<'_>) -> Result<()> {
+        let gql_test = Client::new(
+            "".to_owned(),
+            format!("http://localhost:{}/gql", container.get_host_port_ipv4(3000)),
+        );
+        let metadata_uri = format!("http://localhost:{}/streamer_metadata", container.get_host_port_ipv4(3000));
+        let spade_uri = format!("http://localhost:{}/base", container.get_host_port_ipv4(3000));
+
+        let (events_tx, events_rx) = unbounded();
+        let (ws_tx, ws_rx) = unbounded();
+        let mut pubsub = PubSub::empty(events_tx.clone());
+        pubsub.streamers = HashMap::from([
+            (UserId::from_static("1"), StreamerState::default()),
+        ]);
+
+        let user_a = User {
+            id: UserId::from_static("1"),
+            stream: Some(Stream {
+                id: UserId::from_static("2"),
+                game: None,
+            }),
+        };
+
+        let mock = reqwest::Client::new();
+        mock.post(&metadata_uri)
+            .json(&json!({ "1": ["a", user_a] })).send().await.unwrap();
+
+        let pubsub = Arc::new(RwLock::new(pubsub));
+        let live = spawn(live::run(events_tx, vec![(UserId::from_static("1"), StreamerInfo::with_channel_name("a"))], gql_test, spade_uri));
+        let listener = spawn(super::event_listener(pubsub.clone(), events_rx, ws_tx, "".to_owned()));
+
+        let res = timeout(Duration::from_secs(1), ws_rx.stream().take(3).collect::<Vec<_>>()).await;
+
+        assert!(res.is_ok());
+        let res = res.unwrap();
+        assert_eq!(res.len(), 3);
+        for item in res {
+            let mut v = serde_json::from_str::<serde_json::Value>(&item).expect("Deserialize JSON");
+            let item = traverse_json(&mut v, ".type");
+            assert!(item.is_some());
+            let item = item.unwrap();
+            assert!(item.is_string());
+            assert_eq!(item.as_str().unwrap(), "LISTEN");
+        }
+
+        let user_a = User {
+            id: UserId::from_static("1"),
+            stream: None,
+        };
+        mock.post(&metadata_uri)
+            .json(&json!({ "1": ["a", user_a] })).send().await.unwrap();
+
+        let res = timeout(Duration::from_secs(1), ws_rx.stream().take(3).collect::<Vec<_>>()).await;
+
+        assert!(res.is_ok());
+        let res = res.unwrap();
+        assert_eq!(res.len(), 3);
+        for item in res {
+            let mut v = serde_json::from_str::<serde_json::Value>(&item).expect("Deserialize JSON");
+            let item = traverse_json(&mut v, ".type");
+            assert!(item.is_some());
+            let item = item.unwrap();
+            assert!(item.is_string());
+            assert_eq!(item.as_str().unwrap(), "UNLISTEN");
+        }
+
+        live.abort();
+        listener.abort();
         Ok(())
     }
 }

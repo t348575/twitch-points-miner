@@ -14,7 +14,6 @@ pub struct Config {
     pub streamers: IndexMap<String, ConfigType>,
     pub presets: Option<IndexMap<String, StreamerConfig>>,
     pub watch_streak: Option<bool>,
-    #[cfg(feature = "analytics")]
     pub analytics_db: Option<String>,
 }
 
@@ -22,7 +21,7 @@ pub trait Normalize {
     fn normalize(&mut self);
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, Validate)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct StreamerConfig {
     pub follow_raid: bool,
@@ -30,7 +29,7 @@ pub struct StreamerConfig {
     pub prediction: PredictionConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, Validate)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 #[validate(nested)]
 pub struct PredictionConfig {

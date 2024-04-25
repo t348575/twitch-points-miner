@@ -4,6 +4,7 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
+use common::config::{Config, ConfigType, StreamerConfig};
 use http::StatusCode;
 use indexmap::IndexMap;
 use serde::Deserialize;
@@ -12,12 +13,7 @@ use twitch_api::types::UserId;
 use utoipa::ToSchema;
 use validator::Validate;
 
-use crate::{
-    config::{Config, ConfigType, StreamerConfig},
-    make_paths,
-    pubsub::PubSub,
-    sub_error,
-};
+use crate::{make_paths, pubsub::PubSub, sub_error};
 
 use super::{
     ApiError, ApiState, ConfigTypeRef, RouterBuild, StreamerConfigRef, StreamerConfigRefWrapper,
@@ -266,7 +262,6 @@ async fn update_streamer_config(
 }
 
 impl PubSub {
-    #[cfg(feature = "web_api")]
     #[allow(private_interfaces)]
     pub fn insert_config(
         &mut self,

@@ -7,19 +7,14 @@ use flume::unbounded;
 use tokio::sync::RwLock;
 use tokio::{fs, spawn};
 use tracing::info;
+use tracing_subscriber::fmt::format::{Compact, DefaultFields};
+use tracing_subscriber::fmt::time::ChronoLocal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-#[cfg(feature = "web_api")]
-mod web_api;
-
-#[cfg(feature = "analytics")]
 mod analytics;
-
-mod config;
 mod live;
 mod pubsub;
-mod twitch;
-mod types;
+mod web_api;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -28,7 +23,6 @@ struct Args {
     #[arg(short, long, default_value_t = String::from("config.yaml"))]
     config: String,
     /// API address to bind
-    #[cfg(feature = "web_api")]
     #[arg(short, long, default_value_t = String::from("0.0.0.0:3000"))]
     address: String,
     /// Simulate predictions, don't actually make them
@@ -41,9 +35,23 @@ struct Args {
     #[arg(short, long, default_value_t = false)]
     log_to_file: bool,
     /// Enable analytics, enabled by default
-    #[cfg(feature = "analytics")]
     #[arg(long, default_value_t = true)]
     analytics: bool,
+}
+
+const BASE_URL: &str = "https://twitch.tv";
+
+fn get_layer<S>(
+    layer: tracing_subscriber::fmt::Layer<S>,
+) -> tracing_subscriber::fmt::Layer<
+    S,
+    DefaultFields,
+    tracing_subscriber::fmt::format::Format<Compact, ChronoLocal>,
+> {
+    layer
+        .with_timer(ChronoLocal::new("%v %k:%M:%S %z".to_owned()))
+        .with_target(false)
+        .compact()
 }
 
 #[tokio::main]
@@ -57,18 +65,14 @@ async fn main() -> Result<()> {
             EnvFilter::new(format!("twitch_points_miner={log_level}"))
                 .add_directive(format!("tower_http::trace={log_level}").parse()?),
         )
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_target(false)
-                .compact(),
-        );
+        .with(get_layer(tracing_subscriber::fmt::layer()));
 
     let file_appender = tracing_appender::rolling::never(".", "twitch-points-miner.log");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
     if args.log_to_file {
         tracing_opts
-            .with(tracing_subscriber::fmt::layer().with_writer(non_blocking))
+            .with(get_layer(tracing_subscriber::fmt::layer()).with_writer(non_blocking))
             .init();
     } else {
         tracing_opts.init();
@@ -76,10 +80,10 @@ async fn main() -> Result<()> {
 
     if !Path::new(&args.token).exists() {
         info!("Starting login sequence");
-        twitch::auth::login(&args.token).await?;
+        common::twitch::auth::login(&args.token).await?;
     }
 
-    let mut c: config::Config = serde_yaml::from_str(
+    let mut c: common::config::Config = serde_yaml::from_str(
         &fs::read_to_string(&args.config)
             .await
             .context("Reading config file")?,
@@ -102,7 +106,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    let token: twitch::auth::Token = serde_json::from_str(
+    let token: common::twitch::auth::Token = serde_json::from_str(
         &fs::read_to_string(args.token)
             .await
             .context("Reading tokens file")?,
@@ -110,9 +114,14 @@ async fn main() -> Result<()> {
     .context("Parsing tokens file")?;
     info!("Parsed tokens file");
 
-    let user_info = twitch::gql::get_user_id(&token.access_token).await?;
+    let gql = common::twitch::gql::Client::new(
+        token.access_token.clone(),
+        "https://gql.twitch.tv/gql".to_owned(),
+    );
+    let user_info = gql.get_user_id().await?;
     let streamer_names = c.streamers.keys().map(|s| s.as_str()).collect::<Vec<_>>();
-    let channels = twitch::gql::streamer_metadata(&streamer_names, &token.access_token)
+    let channels = gql
+        .streamer_metadata(&streamer_names)
         .await
         .wrap_err_with(|| "Could not get streamer list. Is your token valid?")?;
     info!("Got streamer list");
@@ -123,26 +132,24 @@ async fn main() -> Result<()> {
         }
     }
 
-    #[cfg(feature = "analytics")]
     let analytics = if args.analytics {
         Arc::new(analytics::AnalyticsWrapper::new(
             &c.analytics_db.unwrap_or("analytics.db".to_owned()),
         )?)
     } else {
-        Arc::new(analytics::AnalyticsWrapper(tokio::sync::Mutex::new(None)))
+        Arc::new(analytics::AnalyticsWrapper::empty())
     };
 
     let channels = channels.into_iter().flatten().collect::<Vec<_>>();
-    let points = twitch::gql::get_channel_points(
-        &channels
-            .iter()
-            .map(|x| x.1.channel_name.as_str())
-            .collect::<Vec<_>>(),
-        &token.access_token,
-    )
-    .await?;
+    let points = gql
+        .get_channel_points(
+            &channels
+                .iter()
+                .map(|x| x.1.channel_name.as_str())
+                .collect::<Vec<_>>(),
+        )
+        .await?;
 
-    #[cfg(feature = "analytics")]
     for (c, p) in channels.iter().zip(&points) {
         let id = c.0.as_str().parse::<i32>()?;
         let inserted = analytics
@@ -161,21 +168,22 @@ async fn main() -> Result<()> {
         }
     }
 
-    let active_predictions = twitch::gql::channel_points_context(
-        &channels
-            .iter()
-            .map(|x| x.1.channel_name.as_str())
-            .collect::<Vec<_>>(),
-        &token.access_token,
-    )
-    .await?;
+    let active_predictions = gql
+        .channel_points_context(
+            &channels
+                .iter()
+                .map(|x| x.1.channel_name.as_str())
+                .collect::<Vec<_>>(),
+        )
+        .await?;
 
-    println!("Everything ok, starting twitch pubsub");
+    info!("Everything ok, starting twitch pubsub");
     let (events_tx, events_rx) = unbounded::<live::Events>();
     let live = spawn(live::run(
-        Arc::new(token.clone()),
         events_tx.clone(),
         channels.clone(),
+        gql.clone(),
+        BASE_URL.to_owned(),
     ));
     let pubsub_data = Arc::new(RwLock::new(pubsub::PubSub::new(
         c_original,
@@ -191,11 +199,10 @@ async fn main() -> Result<()> {
         args.simulate,
         token.clone(),
         user_info,
-        #[cfg(feature = "web_api")]
+        gql.clone(),
+        BASE_URL,
         live,
-        #[cfg(feature = "web_api")]
         events_tx,
-        #[cfg(feature = "analytics")]
         analytics,
     )?));
 
@@ -203,19 +210,65 @@ async fn main() -> Result<()> {
         token.clone(),
         events_rx,
         pubsub_data.clone(),
+        gql,
     ));
 
-    #[cfg(feature = "web_api")]
-    println!("Starting web api!");
+    info!("Starting web api!");
 
-    #[cfg(feature = "web_api")]
     let axum_server = web_api::get_api_server(args.address, pubsub_data, Arc::new(token)).await;
 
-    #[cfg(feature = "web_api")]
     axum_server.await?;
     pubsub.await??;
-    #[cfg(not(feature = "web_api"))]
-    live.await??;
 
     Ok(())
+}
+
+#[cfg(test)]
+pub mod test {
+    use rstest::fixture;
+    use testcontainers::{clients::Cli, core::WaitFor, Container, GenericImage};
+
+    #[ctor::ctor]
+    fn init() {
+        let mut child = std::process::Command::new("docker")
+            .arg("build")
+            .arg("-f")
+            .arg(format!(
+                "{}/../mock.dockerfile",
+                std::env::var("CARGO_MANIFEST_DIR").unwrap()
+            ))
+            .arg("--tag")
+            .arg("twitch-mock:latest")
+            .arg(format!(
+                "{}/../",
+                std::env::var("CARGO_MANIFEST_DIR").unwrap()
+            ))
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("Could not build twitch-mock:latest");
+        if !child.wait().expect("Could not run docker").success() {
+            panic!("Could not build twitch-mock:latest");
+        }
+    }
+
+    fn image() -> GenericImage {
+        GenericImage::new("twitch-mock", "latest")
+            .with_exposed_port(3000)
+            .with_wait_for(WaitFor::message_on_stdout("ready"))
+    }
+
+    #[fixture]
+    #[once]
+    fn docker() -> Cli {
+        Cli::default()
+    }
+
+    pub type TestContainer<'a> = Container<'a, GenericImage>;
+
+    #[fixture]
+    pub fn container<'a>(docker: &'a Cli) -> Container<'a, GenericImage> {
+        let container = docker.run(image());
+        container.start();
+        container
+    }
 }
