@@ -4,7 +4,7 @@ import { writable } from "svelte/store";
 
 export const streamers = writable<Streamer[]>([]);
 
-const baseUrl = import.meta.env.DEV ? "http://localhost:3000" : window.location.href;
+const baseUrl = import.meta.env.DEV ? "http://localhost:3000/" : window.location.href;
 const client = createClient<paths>({
   baseUrl,
 });
@@ -240,6 +240,6 @@ export async function set_watch_priority(
 }
 
 export async function get_logs(): Promise<string> {
-  const res = await fetch(`${baseUrl}/api/logs`);
+  const res = await fetch(`${baseUrl}api/logs`);
   return await res.text()
 }
