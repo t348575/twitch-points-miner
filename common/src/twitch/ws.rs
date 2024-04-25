@@ -1,4 +1,4 @@
-use color_eyre::Result;
+use color_eyre::{eyre::Context, Result};
 use flume::{Receiver, Sender};
 use futures::{
     stream::{SplitSink, SplitStream},
@@ -36,7 +36,10 @@ pub async fn connect_twitch_ws(
 
 pub async fn writer(rx: Receiver<String>, mut write: SplitSink<WsStream, Message>) -> Result<()> {
     while let Ok(msg) = rx.recv_async().await {
-        write.send(Message::Text(msg)).await?;
+        write
+            .send(Message::Text(msg))
+            .await
+            .context("Could not send ws message")?;
     }
     Ok(())
 }

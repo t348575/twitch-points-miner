@@ -250,7 +250,7 @@ impl PubSub {
                                 .context("Handle pubsub response")?;
                         }
                     }
-                    Err(err) => warn!("Failed to parse message {:#?}", err),
+                    Err(err) => warn!("Failed to parse ws message {:#?}", err),
                 }
             }
         }
@@ -560,7 +560,7 @@ async fn event_listener(
                         }?;
 
                         for item in cmds {
-                            tx.send_async(item).await?;
+                            tx.send_async(item).await.context("Send ws commands")?;
                         }
                     }
                 }
@@ -572,7 +572,7 @@ async fn event_listener(
 
     loop {
         if let Err(err) = inner(&pubsub, &events_rx, &tx, &access_token).await {
-            error!("{err:#?}");
+            error!("event_listener {err:#?}");
         }
     }
 }
@@ -595,7 +595,7 @@ pub async fn prediction_logic(
     let prediction = prediction.unwrap();
     for filter in &c.config.prediction.filters {
         if !filter_matches(&prediction.0, filter, streamer).context("Checking filter")? {
-            info!("Filter matches {:#?}", filter);
+            debug!("Filter matches {:#?}", filter);
             return Ok(None);
         }
     }
@@ -737,7 +737,11 @@ async fn watch_streams(pubsub: Arc<RwLock<PubSub>>, events_rx: Receiver<Events>)
                 &spade_url,
                 &access_token,
             )
-            .await?;
+            .await
+            .context(format!(
+                "Could not set viewership {}",
+                streamer.info.channel_name
+            ))?;
         }
 
         *watch_streak = watch_streak.drain(..).filter(|x| x.1 < 60).collect();
@@ -747,7 +751,7 @@ async fn watch_streams(pubsub: Arc<RwLock<PubSub>>, events_rx: Receiver<Events>)
     loop {
         if let Err(err) = inner(&pubsub, &mut watch_streak).await {
             if err.to_string() != "Spade URL not set" {
-                error!("{err}");
+                error!("watch_streams {err}");
             }
         }
 
@@ -793,7 +797,10 @@ async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>, gql: gql::Client) 
             return Ok(());
         }
 
-        let points = gql.get_channel_points(&channel_names).await?;
+        let points = gql
+            .get_channel_points(&channel_names)
+            .await
+            .context("Get channel points")?;
         {
             let mut points_value;
             let mut points_info = PointsInfo::Watching;
@@ -832,7 +839,7 @@ async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>, gql: gql::Client) 
 
     loop {
         if let Err(err) = inner(&pubsub, &gql).await {
-            error!("{err}");
+            error!("update_and_claim_points {err}");
         }
 
         sleep(Duration::from_secs(60)).await

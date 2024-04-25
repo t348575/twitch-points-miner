@@ -29,7 +29,7 @@ pub async fn run(
 
     loop {
         if let Err(err) = inner(&events_tx, &channels, &gql, &base_url, 60 * 1000).await {
-            error!("{err}");
+            error!("live {err}");
         }
 
         sleep(Duration::from_secs(60)).await

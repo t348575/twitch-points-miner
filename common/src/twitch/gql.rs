@@ -148,7 +148,6 @@ impl Client {
         let mut res = res.json::<serde_json::Value>().await?;
         let res = traverse_json(&mut res, ".data.makePrediction.error").unwrap();
         if !res.is_null() {
-            tracing::error!("Failed to make prediction: {:#?}", res);
             return Err(eyre!("Failed to make prediction: {:#?}", res));
         }
         Ok(())
