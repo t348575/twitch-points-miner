@@ -1,7 +1,7 @@
 use std::{io::SeekFrom, path::Path, sync::Arc};
 
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::{Html, IntoResponse},
     routing::get,
@@ -14,6 +14,7 @@ use common::{
     twitch::auth::Token,
     types::*,
 };
+use serde::Deserialize;
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncSeekExt, BufReader},
@@ -82,7 +83,7 @@ pub async fn get_api_server(
         components(
             schemas(
                 PubSub, StreamerState, StreamerConfigRefWrapper, ConfigTypeRef, StreamerConfig, PredictionConfig, StreamerInfo, Event,
-                Filter, Strategy, UserId, Game, Detailed, Timestamp, DefaultPrediction, DetailedOdds, Points, OddsComparisonType
+                Filter, Strategy, UserId, Game, Detailed, Timestamp, DefaultPrediction, DetailedOdds, Points, OddsComparisonType, LogQuery
             ),
         ),
         tags(
@@ -227,16 +228,17 @@ impl PubSub {
     }
 }
 
-async fn read_last_n_lines(file: &mut File, mut n: usize) -> Result<Vec<String>> {
+async fn read_sliced_lines(file: &mut File, log_query: LogQuery) -> Result<Vec<String>> {
     let mut lines = Vec::new();
+    let mut n = log_query.per_page;
+    let mut current_page = 0;
+    let mut total_lines = 0;
 
-    let file_size = file.metadata().await?.len();
     let mut file = BufReader::new(file);
+    file.seek(SeekFrom::End(0)).await?;
 
     let mut prev_buffer: Vec<u8> = Vec::new();
-
-    file.seek(SeekFrom::End(0)).await?;
-    while n > 0 && file_size > 0 {
+    while current_page <= log_query.page {
         file.seek(SeekFrom::Current(-1024)).await?;
         let mut buffer = [0; 1024];
         let bytes_read = file.read(&mut buffer).await?;
@@ -262,14 +264,21 @@ async fn read_last_n_lines(file: &mut File, mut n: usize) -> Result<Vec<String>>
                 break;
             }
 
+            if current_page > log_query.page {
+                break;
+            }
+
             let line = String::from_utf8(line.to_vec())?;
             if !line.trim().is_empty() {
                 if idx + 1 == size {
                     prev_buffer = line.as_bytes().to_vec();
-                } else {
+                    break;
+                } else if current_page == log_query.page {
                     lines.push(format!("{line}\n"));
+                    n -= 1;
                 }
-                n -= 1;
+                total_lines += 1;
+                current_page = total_lines / log_query.per_page;
             }
         }
         file.seek(SeekFrom::Current((-1 * bytes_read as i64) - 1))
@@ -285,14 +294,21 @@ async fn read_last_n_lines(file: &mut File, mut n: usize) -> Result<Vec<String>>
     Ok(lines)
 }
 
+#[derive(Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+struct LogQuery {
+    per_page: usize,
+    page: usize,
+}
+
 #[utoipa::path(
     get,
     path = "/api/logs",
     responses(
         (status = 200, description = "Get last logs as rendered html", body = String, content_type = "text/html"),
-    )
+    ),
+    params(LogQuery)
 )]
-async fn get_logs() -> Result<Html<String>, ApiError> {
+async fn get_logs(Query(log_query): Query<LogQuery>) -> Result<Html<String>, ApiError> {
     if !Path::new("twitch-points-miner.log").exists() {
         return Ok(Html(
             "Logging to file not enabled, use the --log-to-file flag!".to_string(),
@@ -306,9 +322,9 @@ async fn get_logs() -> Result<Html<String>, ApiError> {
         .context("Opening log file")
         .map_err(ApiError::internal_error)?;
 
-    let text = read_last_n_lines(&mut file, 30)
+    let text = read_sliced_lines(&mut file, log_query)
         .await
-        .context("Grabbing log lines")
+        .context("grabbing log lines")
         .map_err(ApiError::internal_error)?
         .into_iter()
         .filter(|x| !x.trim().is_empty())
@@ -316,7 +332,7 @@ async fn get_logs() -> Result<Html<String>, ApiError> {
         .collect::<Vec<_>>()
         .join("");
     let html = ansi_to_html::convert(&text)
-        .context("Rendering log lines")
+        .context("rendering log lines")
         .map_err(ApiError::internal_error)?;
     Ok(Html(html))
 }

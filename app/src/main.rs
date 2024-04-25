@@ -55,7 +55,7 @@ async fn main() -> Result<()> {
             tracing_subscriber::fmt::layer()
                 .with_timer(ChronoLocal::new("%v %k:%M:%S %z".to_owned()))
                 .with_target(false)
-                .compact()
+                .compact(),
         );
 
     let file_appender = tracing_appender::rolling::never(".", "twitch-points-miner.log");

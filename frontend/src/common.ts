@@ -239,7 +239,7 @@ export async function set_watch_priority(
   }
 }
 
-export async function get_logs(): Promise<string> {
-  const res = await fetch(`${baseUrl}api/logs`);
+export async function get_logs(page: number, page_size: number): Promise<string> {
+  const res = await fetch(`${baseUrl}api/logs?page=${page}&per_page=${page_size}`);
   return await res.text()
 }
