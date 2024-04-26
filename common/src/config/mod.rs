@@ -29,6 +29,12 @@ pub struct StreamerConfig {
     pub prediction: PredictionConfig,
 }
 
+impl StreamerConfig {
+    pub fn validate(&self) -> Result<()> {
+        Ok(self.prediction.validate()?)
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, Validate)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 #[validate(nested)]

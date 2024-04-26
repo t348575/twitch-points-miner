@@ -14,11 +14,9 @@ indexmap = { version = "2.2", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "chrono"] }
 twitch_api = { features = ["pubsub", "unsupported", "utoipa"], git = "https://github.com/t348575/twitch_api", branch = "hidden_pubsubs" }
-futures = "0.3"
 clap = { version = "4.5", features = ["derive"] }
 color-eyre = "0.6"
 rand = "0.8"
-validator = { version = "0.17", features = ["derive"], git = "https://github.com/Keats/validator", rev = "1dd03ed" }
 serde_yaml = "0.9"
 chrono = { version = "0.4", features = ["serde"] }
 axum = { version = "0.7", features = ["macros"] }
@@ -45,6 +43,7 @@ ctor = "0.2"
 rstest = "0.19"
 env_logger = "0.11"
 reqwest = "0.12"
+futures = "0.3"
 
 [[bin]]
 name = "twitch-points-miner"

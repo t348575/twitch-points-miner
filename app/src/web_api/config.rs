@@ -11,7 +11,6 @@ use serde::Deserialize;
 use thiserror::Error;
 use twitch_api::types::UserId;
 use utoipa::ToSchema;
-use validator::Validate;
 
 use crate::{make_paths, pubsub::PubSub, sub_error};
 

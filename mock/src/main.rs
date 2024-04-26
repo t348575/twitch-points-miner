@@ -23,8 +23,8 @@ struct AppState {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::new(&format!("twitch_mock=DEBUG"))
-                .add_directive(format!("tower_http::trace=DEBUG").parse()?),
+            EnvFilter::new("twitch_mock=DEBUG")
+                .add_directive("tower_http::trace=DEBUG".parse()?),
         )
         .init();
 

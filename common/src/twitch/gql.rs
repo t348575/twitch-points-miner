@@ -120,7 +120,7 @@ impl Client {
                             Some((user.id.clone(), user.into(channel_name.to_string())))
                         }
                     }
-                    None => return None,
+                    None => None,
                 },
             )
             .collect();

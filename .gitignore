@@ -9,3 +9,4 @@ node_modules
 dist
 tailscale
 twitch-points-miner.log
+temp

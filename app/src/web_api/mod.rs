@@ -246,14 +246,14 @@ async fn read_sliced_lines(file: &mut File, log_query: LogQuery) -> Result<Vec<S
         let mut temp_buffer = buffer[0..bytes_read].to_vec();
         temp_buffer.append(&mut prev_buffer);
         prev_buffer = temp_buffer;
-        if !buffer[0..bytes_read].contains(&('\n' as u8)) {
-            file.seek(SeekFrom::Current((-1 * bytes_read as i64) - 1))
+        if !buffer[0..bytes_read].contains(&(b'\n')) {
+            file.seek(SeekFrom::Current(-(bytes_read as i64) - 1))
                 .await?;
             continue;
         }
 
         let raw_lines = prev_buffer
-            .split(|x| *x == '\n' as u8)
+            .split(|x| *x == b'\n')
             .map(|x| x.to_vec())
             .rev()
             .collect::<Vec<_>>();
@@ -281,7 +281,7 @@ async fn read_sliced_lines(file: &mut File, log_query: LogQuery) -> Result<Vec<S
                 current_page = total_lines / log_query.per_page;
             }
         }
-        file.seek(SeekFrom::Current((-1 * bytes_read as i64) - 1))
+        file.seek(SeekFrom::Current(-(bytes_read as i64) - 1))
             .await?;
 
         if file.stream_position().await? == 0 {

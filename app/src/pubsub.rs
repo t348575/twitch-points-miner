@@ -11,19 +11,19 @@ use color_eyre::{
 };
 use common::{
     config::{self, filters::filter_matches, strategy, Config, ConfigType, StreamerConfig},
-    tokio_tungstenite::tungstenite::Message,
-    twitch::{api, auth::Token, gql, ws},
+    twitch::{
+        api,
+        auth::Token,
+        gql,
+        ws::{Request, WsPool},
+    },
     types::{
         ConfigTypeRef, StreamerConfigRef, StreamerConfigRefWrapper, StreamerInfo, StreamerState,
     },
 };
-use flume::{unbounded, Receiver, Sender};
-use futures::StreamExt;
+use flume::{Receiver, Sender};
 use indexmap::IndexMap;
-use rand::{
-    distributions::{Alphanumeric, DistString},
-    Rng,
-};
+use rand::Rng;
 use serde::Serialize;
 use tokio::task::JoinHandle;
 use tokio::{spawn, sync::RwLock, time::sleep};
@@ -31,10 +31,9 @@ use tracing::{debug, error, info, warn};
 use twitch_api::{
     pubsub::{
         community_points::CommunityPointsUserV1,
-        listen_command,
         predictions::{Event, PredictionsChannelV1},
         raid::{Raid, RaidReply},
-        unlisten_command, Response, TopicData, Topics,
+        TopicData, Topics,
     },
     types::UserId,
 };
@@ -221,40 +220,22 @@ impl PubSub {
         pubsub: Arc<RwLock<PubSub>>,
         gql: gql::Client,
     ) -> Result<()> {
-        let (write, mut read) = ws::connect_twitch_ws(&token.access_token)
-            .await
-            .context("Could not connect to pub sub")?;
-        let (tx, rx) = unbounded::<String>();
+        let (ws_pool, tx, rx) = WsPool::start(&token.access_token).await;
 
-        spawn(ws::writer(rx, write));
-        spawn(ws::ping_loop(tx.clone()));
-        spawn(event_listener(
-            pubsub.clone(),
-            events_rx.clone(),
-            tx.clone(),
-            token.access_token.clone(),
-        ));
+        spawn(event_listener(pubsub.clone(), events_rx.clone(), tx));
         spawn(watch_streams(pubsub.clone(), events_rx));
         spawn(update_and_claim_points(pubsub.clone(), gql.clone()));
 
-        info!("Connected to pubsub");
-        while let Some(Ok(msg)) = read.next().await {
-            if let Message::Text(m) = msg {
-                match Response::parse(&m) {
-                    Ok(r) => {
-                        if let Response::Message { data } = r {
-                            let mut writer = pubsub.write().await;
-                            writer
-                                .handle_response(data)
-                                .await
-                                .context("Handle pubsub response")?;
-                        }
-                    }
-                    Err(err) => warn!("Failed to parse ws message {:#?}", err),
-                }
+        while let Ok(data) = rx.recv_async().await {
+            let res = pubsub.write().await.handle_response(data).await;
+
+            if let Err(e) = res {
+                warn!("Error handling response: {}", e);
             }
         }
-        Ok(())
+
+        info!("Connected to pubsub");
+        ws_pool.await?
     }
 
     async fn handle_response(&mut self, data: TopicData) -> Result<()> {
@@ -508,14 +489,12 @@ impl PubSub {
 async fn event_listener(
     pubsub: Arc<RwLock<PubSub>>,
     events_rx: Receiver<Events>,
-    tx: Sender<String>,
-    access_token: String,
+    tx: Sender<Request>,
 ) {
     async fn inner(
         pubsub: &Arc<RwLock<PubSub>>,
         events_rx: &Receiver<Events>,
-        tx: &Sender<String>,
-        access_token: &str,
+        tx: &Sender<Request>,
     ) -> Result<()> {
         while let Ok(events) = events_rx.recv_async().await {
             let mut writer = pubsub.write().await;
@@ -534,32 +513,21 @@ async fn event_listener(
                         s.info.broadcast_id = broadcast_id;
 
                         let channel_id = channel_id.as_str().parse()?;
-                        let nonce = Alphanumeric.sample_string(&mut rand::thread_rng(), 30);
                         let topics = [
                             Topics::PredictionsChannelV1(PredictionsChannelV1 { channel_id }),
                             Topics::CommunityPointsUserV1(CommunityPointsUserV1 { channel_id }),
                             Topics::Raid(Raid { channel_id }),
                         ];
 
-                        let cmds = if s.info.live {
-                            topics
-                                .into_iter()
-                                .map(|x| {
-                                    listen_command(&[x], access_token, nonce.as_str())
-                                        .context("Generate listen command")
-                                })
-                                .collect::<Result<Vec<_>, _>>()
-                        } else {
-                            topics
-                                .into_iter()
-                                .map(|x| {
-                                    unlisten_command(&[x], nonce.as_str())
-                                        .context("Generate unlisten command")
-                                })
-                                .collect::<Result<Vec<_>, _>>()
-                        }?;
+                        let topics = topics.into_iter().map(|x| {
+                            if s.info.live {
+                                Request::Listen(x)
+                            } else {
+                                Request::UnListen(x)
+                            }
+                        });
 
-                        for item in cmds {
+                        for item in topics {
                             tx.send_async(item).await.context("Send ws commands")?;
                         }
                     }
@@ -571,7 +539,7 @@ async fn event_listener(
     }
 
     loop {
-        if let Err(err) = inner(&pubsub, &events_rx, &tx, &access_token).await {
+        if let Err(err) = inner(&pubsub, &events_rx, &tx).await {
             error!("event_listener {err:#?}");
         }
     }
@@ -862,7 +830,12 @@ mod test {
     use serde_json::json;
     use tokio::{spawn, sync::RwLock, time::timeout};
     use twitch_api::{
-        pubsub::predictions::{Event, Outcome},
+        pubsub::{
+            community_points::CommunityPointsUserV1,
+            predictions::{Event, Outcome, PredictionsChannelV1},
+            raid::Raid,
+            Topics,
+        },
         types::{Timestamp, UserId},
     };
 
@@ -873,7 +846,7 @@ mod test {
         },
         twitch::{
             gql::{Client, Stream, User},
-            traverse_json,
+            ws,
         },
         types::*,
     };
@@ -1117,21 +1090,16 @@ mod test {
 
         let pubsub = Arc::new(RwLock::new(pubsub));
         let live = spawn(live::run(events_tx, vec![(UserId::from_static("1"), StreamerInfo::with_channel_name("a"))], gql_test, spade_uri));
-        let listener = spawn(super::event_listener(pubsub.clone(), events_rx, ws_tx, "".to_owned()));
+        let listener = spawn(super::event_listener(pubsub.clone(), events_rx, ws_tx));
 
         let res = timeout(Duration::from_secs(1), ws_rx.stream().take(3).collect::<Vec<_>>()).await;
 
         assert!(res.is_ok());
         let res = res.unwrap();
         assert_eq!(res.len(), 3);
-        for item in res {
-            let mut v = serde_json::from_str::<serde_json::Value>(&item).expect("Deserialize JSON");
-            let item = traverse_json(&mut v, ".type");
-            assert!(item.is_some());
-            let item = item.unwrap();
-            assert!(item.is_string());
-            assert_eq!(item.as_str().unwrap(), "LISTEN");
-        }
+        assert_eq!(res[0], ws::Request::Listen(Topics::PredictionsChannelV1(PredictionsChannelV1 { channel_id: 1 })));
+        assert_eq!(res[1], ws::Request::Listen(Topics::CommunityPointsUserV1(CommunityPointsUserV1 { channel_id: 1 })));
+        assert_eq!(res[2], ws::Request::Listen(Topics::Raid(Raid { channel_id: 1 })));
 
         let user_a = User {
             id: UserId::from_static("1"),
@@ -1145,14 +1113,9 @@ mod test {
         assert!(res.is_ok());
         let res = res.unwrap();
         assert_eq!(res.len(), 3);
-        for item in res {
-            let mut v = serde_json::from_str::<serde_json::Value>(&item).expect("Deserialize JSON");
-            let item = traverse_json(&mut v, ".type");
-            assert!(item.is_some());
-            let item = item.unwrap();
-            assert!(item.is_string());
-            assert_eq!(item.as_str().unwrap(), "UNLISTEN");
-        }
+        assert_eq!(res[0], ws::Request::UnListen(Topics::PredictionsChannelV1(PredictionsChannelV1 { channel_id: 1 })));
+        assert_eq!(res[1], ws::Request::UnListen(Topics::CommunityPointsUserV1(CommunityPointsUserV1 { channel_id: 1 })));
+        assert_eq!(res[2], ws::Request::UnListen(Topics::Raid(Raid { channel_id: 1 })));
 
         live.abort();
         listener.abort();
