@@ -1,4 +1,11 @@
-# twitch-points-miner ![Visits](https://nkvnu62257.execute-api.ap-south-1.amazonaws.com/production?repo=twitch-points-miner)
+# twitch-points-miner
+<p align="center">
+<img alt="Views" src="https://xn4nc029ta.execute-api.ap-south-1.amazonaws.com/default/repo-view-counter?repo=twitch-points-miner">
+<img alt="Docker Image Version" src="https://img.shields.io/docker/v/t348575/twitch-points-miner">
+<img alt="Docker Pulls" src="https://img.shields.io/docker/pulls/t348575/twitch-points-miner">
+<img alt="Docker Image Size" src="https://img.shields.io/docker/image-size/t348575/twitch-points-miner">
+</p>
+
 
 A very lightweight twitch points miner, using only a few MB of ram, inspired by [Twitch-Channel-Points-Miner-v2](https://github.com/rdavydov/Twitch-Channel-Points-Miner-v2).
 
