@@ -10,7 +10,7 @@ use axum::{
 use color_eyre::eyre::Context;
 use common::{
     config::ConfigType,
-    twitch::{auth::Token, gql},
+    twitch::{auth::Token, gql, ws},
     types::*,
 };
 use http::StatusCode;
@@ -197,7 +197,10 @@ async fn mine_streamer(
     );
 
     writer.save_config("Mine streamer").await?;
-    writer.restart_live_watcher();
+    ws::add_streamer(&writer.ws_tx, streamer.0.as_str().parse().unwrap())
+        .await
+        .context("Add streamer to pubsub")
+        .map_err(ApiError::internal_error)?;
 
     let id = streamer
         .0
@@ -252,6 +255,8 @@ async fn remove_streamer(
     writer.configs.remove(&channel_name);
 
     writer.save_config("Remove streamer").await?;
-    writer.restart_live_watcher();
+    ws::remove_streamer(&writer.ws_tx, id.as_str().parse().unwrap())
+        .await
+        .context("Remove streamer from pubsub")?;
     Ok(())
 }

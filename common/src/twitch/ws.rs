@@ -5,7 +5,7 @@ use std::{
 
 use color_eyre::eyre::{Context, Report, Result};
 use flume::{Receiver, RecvTimeoutError, Sender};
-use futures::{
+use futures_util::{
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
 };
@@ -19,10 +19,12 @@ use tokio::{
     time::{sleep, timeout},
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
-use tracing::{debug, info, warn};
-use twitch_api::pubsub::{listen_command, unlisten_command, Response, TopicData, Topics};
-
-use super::{CLIENT_ID, FIREFOX_USER_AGENT};
+use tracing::{debug, info, trace, warn};
+use twitch_api::pubsub::{
+    listen_command, unlisten_command,
+    video_playback::{VideoPlaybackById, VideoPlaybackReply},
+    Response, TopicData, Topics,
+};
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -31,9 +33,11 @@ pub struct WsPool {
     rx: Receiver<Request>,
     tx: Sender<TopicData>,
     access_token: String,
+    #[cfg(feature = "testing")]
+    base_url: String,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub enum Request {
     Listen(Topics),
     UnListen(Topics),
@@ -55,7 +59,7 @@ struct WsConnState {
     retry_commands: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 enum WsStreamState {
     Open,
     Reconnect,
@@ -72,36 +76,56 @@ impl Drop for WsPool {
 impl WsPool {
     pub async fn start(
         access_token: &str,
-    ) -> (JoinHandle<Result<()>>, Sender<Request>, Receiver<TopicData>) {
+        #[cfg(feature = "testing")] base_url: String,
+    ) -> (
+        JoinHandle<()>,
+        Sender<Request>,
+        (Sender<TopicData>, Receiver<TopicData>),
+    ) {
         let (req_tx, req_rx) = flume::unbounded();
         let (res_tx, res_rx) = flume::unbounded();
 
         let pool = spawn(WsPool::run(WsPool {
             connections: vec![],
             rx: req_rx,
-            tx: res_tx,
+            tx: res_tx.clone(),
             access_token: access_token.to_owned(),
+            #[cfg(feature = "testing")]
+            base_url,
         }));
 
-        (pool, req_tx, res_rx)
+        (pool, req_tx, (res_tx, res_rx))
     }
 
-    async fn run(mut self) -> Result<()> {
+    async fn run(mut self) {
         loop {
             if self.connections.is_empty() {
                 self.retry_add_connection().await;
             }
 
             match self.rx.recv_timeout(Duration::from_millis(1)) {
-                Ok(Request::Listen(topic)) => self.listen_command(topic).await,
+                Ok(Request::Listen(topic)) => {
+                    debug!("Got request to add topic {topic:#?}");
+                    let topic_already_exists = self
+                        .connections
+                        .iter()
+                        .map(|x| x.topics.clone())
+                        .flatten()
+                        .find(|x| x.0.eq(&topic));
+                    if topic_already_exists.is_none() {
+                        self.listen_command(topic).await
+                    } else {
+                        debug!("Got request to add existing topic {topic:#?}");
+                    }
+                }
                 Ok(Request::UnListen(topic)) => {
+                    debug!("Got request to remove topic {topic:#?}");
                     let mut conn = None;
                     self.connections = self
                         .connections
                         .drain(..)
                         .filter_map(|x| {
-                            if x.topics.iter().any(|x| x.0.eq(&topic)) && conn.is_none()
-                            {
+                            if x.topics.iter().any(|x| x.0.eq(&topic)) && conn.is_none() {
                                 conn = Some(x);
                                 None
                             } else {
@@ -117,6 +141,19 @@ impl WsPool {
                             conn = self.reconnect(conn).await;
                         }
                         self.connections.push(conn);
+                    }
+
+                    // Send a not-live message back to other listeners, so they can destruct any events they have subscribed to
+                    if let Topics::VideoPlaybackById(VideoPlaybackById { channel_id }) = topic {
+                        _ = self
+                            .tx
+                            .send_async(TopicData::VideoPlaybackById {
+                                topic: VideoPlaybackById { channel_id },
+                                reply: Box::new(VideoPlaybackReply::StreamDown {
+                                    server_time: 0.0,
+                                }),
+                            })
+                            .await;
                     }
                 }
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -150,7 +187,7 @@ impl WsPool {
                     })
                     .await;
                     if ping.is_err() {
-                        warn!("Twitch did not respond to ping");
+                        warn!("Twitch pubsub did not respond to ping");
                         conn = self.reconnect(conn).await;
                     }
                 }
@@ -158,21 +195,25 @@ impl WsPool {
                 if !state.retry_commands.is_empty() {
                     for nonce in state.retry_commands {
                         let mut topic = None;
-                        for conn in &mut self.connections {
-                            conn.topics = conn
-                                .topics
-                                .drain(..)
-                                .filter_map(|x| {
-                                    if x.1.eq(&nonce) {
-                                        topic = Some(x.0);
-                                        None
-                                    } else {
-                                        Some(x)
-                                    }
-                                })
-                                .collect();
-                        }
+                        conn.topics = conn
+                            .topics
+                            .drain(..)
+                            .filter_map(|x| {
+                                if x.1.eq(&nonce) {
+                                    topic = Some(x.0);
+                                    None
+                                } else {
+                                    Some(x)
+                                }
+                            })
+                            .collect();
                         if let Some(topic) = topic {
+                            conn.state
+                                .lock()
+                                .await
+                                .retry_commands
+                                .retain(|x| *x != nonce);
+                            debug!("Retrying topic {topic:#?}");
                             self.listen_command(topic).await;
                         }
                     }
@@ -186,7 +227,6 @@ impl WsPool {
                 self.connections.push(conn);
             }
         }
-        Ok(())
     }
 
     async fn listen_command(&mut self, topic: Topics) {
@@ -231,9 +271,13 @@ impl WsPool {
     }
 
     async fn retry_add_connection(&mut self) {
+        debug!("Adding connection");
         loop {
             match self.add_connection().await {
-                Ok(conn) => self.connections.push(conn),
+                Ok(conn) => {
+                    self.connections.push(conn);
+                    break;
+                }
                 Err(err) => {
                     warn!("Failed to add connection {err:#?}");
                     sleep(Duration::from_secs(1)).await;
@@ -243,7 +287,8 @@ impl WsPool {
     }
 
     async fn add_connection(&mut self) -> Result<WsConn> {
-        let (writer, reader) = connect_twitch_ws(&self.access_token)
+        let (mut writer, reader) = self
+            .connect_twitch_ws()
             .await
             .context("Connecting to twitch pubsub")?;
 
@@ -252,6 +297,11 @@ impl WsPool {
             stream_state: WsStreamState::Open,
             retry_commands: Vec::new(),
         }));
+
+        writer
+            .send(Message::Text(json!({"type": "PING"}).to_string()))
+            .await?;
+
         let conn = WsConn {
             reader: spawn(ws_reader(state.clone(), self.tx.clone(), reader)),
             writer,
@@ -270,6 +320,7 @@ impl WsPool {
         ) -> Result<WsConn, (WsConn, Report)> {
             debug!("Reconnecting ws with {} topics", conn.topics.len());
             if !conn.reader.is_finished() {
+                _ = conn.writer.close().await;
                 conn.reader.abort();
             }
 
@@ -321,6 +372,40 @@ impl WsPool {
             }
         }
     }
+
+    async fn connect_twitch_ws(
+        &self,
+    ) -> Result<(SplitSink<WsStream, Message>, SplitStream<WsStream>)> {
+        let (socket, _) = connect_async(
+            #[cfg(feature = "testing")]
+            &format!("{}/pubsub", self.base_url),
+            #[cfg(not(feature = "testing"))]
+            "wss://pubsub-edge.twitch.tv/v1",
+        )
+        .await?;
+
+        Ok(socket.split())
+    }
+}
+
+pub async fn add_streamer(ws_tx: &Sender<Request>, channel_id: u32) -> Result<()> {
+    ws_tx
+        .send_async(Request::Listen(Topics::VideoPlaybackById(
+            VideoPlaybackById { channel_id },
+        )))
+        .await
+        .context("Add streamer to pubsub")?;
+    Ok(())
+}
+
+pub async fn remove_streamer(ws_tx: &Sender<Request>, channel_id: u32) -> Result<()> {
+    ws_tx
+        .send_async(Request::UnListen(Topics::VideoPlaybackById(
+            VideoPlaybackById { channel_id },
+        )))
+        .await
+        .context("Remove streamer from pubsub")?;
+    Ok(())
 }
 
 impl WsConn {
@@ -329,6 +414,7 @@ impl WsConn {
         let nonce = Alphanumeric.sample_string(&mut rand::thread_rng(), 30);
         let msg = listen_command(&[topic.clone()], self.access_token.as_str(), nonce.as_str())
             .context("Generate listen command")?;
+        trace!("{msg}");
         self.writer
             .send(Message::Text(msg))
             .await
@@ -338,8 +424,10 @@ impl WsConn {
 
     /// Returns the nonce
     async fn unlisten_topic(&mut self, topic: &Topics) -> Result<()> {
-        let msg = unlisten_command(&[topic.clone()], self.access_token.as_str())
+        let nonce = Alphanumeric.sample_string(&mut rand::thread_rng(), 30);
+        let msg = unlisten_command(&[topic.clone()], nonce.as_str())
             .context("Generate listen command")?;
+        trace!("{msg}");
         self.writer
             .send(Message::Text(msg))
             .await
@@ -355,16 +443,22 @@ async fn ws_reader(
 ) -> Result<()> {
     while let Some(Ok(msg)) = stream.next().await {
         if let Message::Text(m) = msg {
+            trace!("Got message {m}");
             match Response::parse(&m) {
                 Ok(r) => match r {
                     Response::Response(data) => {
-                        if data.error.is_some() {
-                            warn!("Command error {:#?}", data.error);
-                            state
-                                .lock()
-                                .await
-                                .retry_commands
-                                .push(data.nonce.unwrap_or_default());
+                        if let Some(error) = data.error {
+                            if !error.is_empty() {
+                                warn!(
+                                    "Command error {} {error:#?}",
+                                    data.nonce.clone().unwrap_or_default()
+                                );
+                                state
+                                    .lock()
+                                    .await
+                                    .retry_commands
+                                    .push(data.nonce.unwrap_or_default());
+                            }
                         }
                     }
                     Response::Message { data } => tx
@@ -374,7 +468,7 @@ async fn ws_reader(
                     Response::Pong => state.lock().await.last_update = Instant::now(),
                     Response::Reconnect => {
                         state.lock().await.stream_state = WsStreamState::Reconnect;
-                        warn!("Reconnect");
+                        warn!("Twitch requested reconnect");
                         break;
                     }
                     _ => warn!("Unknown response {:#?}", r),
@@ -386,24 +480,221 @@ async fn ws_reader(
     Ok(())
 }
 
-async fn connect_twitch_ws(
-    access_token: &str,
-) -> Result<(SplitSink<WsStream, Message>, SplitStream<WsStream>)> {
-    let request = http::Request::builder()
-        .uri("wss://pubsub-edge.twitch.tv/v1")
-        .header("Authorization", format!("OAuth {}", access_token))
-        .header("Client-Id", CLIENT_ID)
-        .header("User-Agent", FIREFOX_USER_AGENT)
-        .header("Host", "pubsub-edge.twitch.tv")
-        .header("upgrade", "websocket")
-        .header("connection", "upgrade")
-        .header(
-            "Sec-WebSocket-Key",
-            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
-        )
-        .header("sec-websocket-version", 13)
-        .body(())?;
-    let (socket, _) = connect_async(request).await?;
+#[cfg(test)]
+mod test {
+    use reqwest::get;
+    use rstest::rstest;
 
-    Ok(socket.split())
+    use super::*;
+    use crate::{
+        testing::{container, TestContainer},
+        twitch::traverse_json,
+    };
+
+    #[rstest]
+    #[timeout(Duration::from_secs(5))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn listen(#[future] container: TestContainer) -> Result<()> {
+        let container = container.await;
+        let (pool, tx, (_, rx)) =
+            WsPool::start("test", format!("ws://localhost:{}", container.port)).await;
+
+        let topic = VideoPlaybackById { channel_id: 1 };
+        _ = tx
+            .send_async(Request::Listen(Topics::VideoPlaybackById(topic.clone())))
+            .await;
+
+        _ = tx
+            .send_async(Request::UnListen(Topics::VideoPlaybackById(topic.clone())))
+            .await;
+
+        let res = rx.stream().take(2).collect::<Vec<_>>().await;
+
+        assert_eq!(res.len(), 2);
+        assert_eq!(
+            res[1],
+            TopicData::VideoPlaybackById {
+                topic: topic.clone(),
+                reply: Box::new(VideoPlaybackReply::StreamUp {
+                    server_time: 0.0,
+                    play_delay: 0
+                })
+            }
+        );
+        assert_eq!(
+            res[0],
+            TopicData::VideoPlaybackById {
+                topic: topic.clone(),
+                reply: Box::new(VideoPlaybackReply::StreamDown { server_time: 0.0 })
+            }
+        );
+
+        pool.abort();
+        Ok(())
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(5))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reconnect(#[future] container: TestContainer) -> Result<()> {
+        let container = container.await;
+        let pubsub_uri = format!("http://localhost:{}/pubsub", container.port);
+
+        let mock = reqwest::Client::new();
+        mock.post(format!("{pubsub_uri}/test_mode"))
+            .json(&json!("Reconnect"))
+            .send()
+            .await?;
+
+        let (pool, tx, (_, _)) =
+            WsPool::start("test", format!("ws://localhost:{}", container.port)).await;
+
+        let topic = VideoPlaybackById { channel_id: 1 };
+        _ = tx
+            .send_async(Request::Listen(Topics::VideoPlaybackById(topic.clone())))
+            .await;
+
+        loop {
+            let mut mock: serde_json::Value = get(format!("{pubsub_uri}/test_stats"))
+                .await?
+                .json()
+                .await?;
+            let connect_count = traverse_json(&mut mock, ".Reconnect.count");
+            if connect_count.is_none() {
+                sleep(Duration::from_millis(1)).await;
+                continue;
+            }
+
+            let connect_count = connect_count.unwrap();
+            assert!(connect_count.is_i64());
+
+            if connect_count.as_i64().unwrap() == 2 {
+                break;
+            } else {
+                sleep(Duration::from_millis(1)).await;
+            }
+        }
+
+        pool.abort();
+        Ok(())
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(5))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn retry_command(#[future] container: TestContainer) -> Result<()> {
+        let container = container.await;
+        let pubsub_uri = format!("http://localhost:{}/pubsub", container.port);
+
+        let mock = reqwest::Client::new();
+        mock.post(format!("{pubsub_uri}/test_mode"))
+            .json(&json!("RetryCommand"))
+            .send()
+            .await?;
+
+        let (pool, tx, (_, _)) =
+            WsPool::start("test", format!("ws://localhost:{}", container.port)).await;
+
+        let topic = VideoPlaybackById { channel_id: 1 };
+        _ = tx
+            .send_async(Request::Listen(Topics::VideoPlaybackById(topic.clone())))
+            .await;
+
+        loop {
+            let mut mock: serde_json::Value = get(format!("{pubsub_uri}/test_stats"))
+                .await?
+                .json()
+                .await?;
+
+            let connect_count = traverse_json(&mut mock, ".RetryCommand.count");
+            if connect_count.unwrap().as_i64().unwrap() == 2 {
+                break;
+            } else {
+                sleep(Duration::from_millis(1)).await;
+            }
+        }
+
+        pool.abort();
+        Ok(())
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(5))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scale_connections(#[future] container: TestContainer) -> Result<()> {
+        let container = container.await;
+        let pubsub_uri = format!("http://localhost:{}/pubsub", container.port);
+
+        let mock = reqwest::Client::new();
+        mock.post(format!("{pubsub_uri}/test_mode"))
+            .json(&json!("ScaleConnections"))
+            .send()
+            .await?;
+
+        let (pool, tx, (_, rx)) =
+            WsPool::start("test", format!("ws://localhost:{}", container.port)).await;
+
+        for i in 0..50 {
+            let topic = VideoPlaybackById { channel_id: i };
+            _ = tx
+                .send_async(Request::Listen(Topics::VideoPlaybackById(topic)))
+                .await;
+        }
+
+        loop {
+            let mut mock: serde_json::Value = get(format!("{pubsub_uri}/test_stats"))
+                .await?
+                .json()
+                .await?;
+
+            let topics = traverse_json(&mut mock, ".ScaleConnections.topics");
+            if topics.unwrap().as_i64().unwrap() == 50 {
+                let sockets = traverse_json(&mut mock, ".ScaleConnections.sockets");
+                if sockets.unwrap().as_i64().unwrap() == 1 {
+                    break;
+                }
+            } else {
+                sleep(Duration::from_millis(1)).await;
+            }
+        }
+
+        let topic = VideoPlaybackById { channel_id: 51 };
+        _ = tx
+            .send_async(Request::Listen(Topics::VideoPlaybackById(topic)))
+            .await;
+
+        loop {
+            let mut mock: serde_json::Value = get(format!("{pubsub_uri}/test_stats"))
+                .await?
+                .json()
+                .await?;
+
+            let topics = traverse_json(&mut mock, ".ScaleConnections.topics");
+            if topics.unwrap().as_i64().unwrap() == 51 {
+                let sockets = traverse_json(&mut mock, ".ScaleConnections.sockets");
+                if sockets.unwrap().as_i64().unwrap() == 2 {
+                    break;
+                }
+            } else {
+                sleep(Duration::from_millis(1)).await;
+            }
+        }
+
+        let topic = VideoPlaybackById { channel_id: 51 };
+        _ = tx
+            .send_async(Request::UnListen(Topics::VideoPlaybackById(topic.clone())))
+            .await;
+
+        let res = rx.recv_async().await?;
+        assert_eq!(
+            res,
+            TopicData::VideoPlaybackById {
+                topic,
+                reply: Box::new(VideoPlaybackReply::StreamDown { server_time: 0.0 })
+            }
+        );
+
+        pool.abort();
+        Ok(())
+    }
 }

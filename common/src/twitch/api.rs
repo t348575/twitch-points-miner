@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose::URL_SAFE, Engine};
 use color_eyre::{eyre::eyre, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use twitch_api::types::UserId;
 
 use crate::{
@@ -79,6 +79,14 @@ pub async fn get_spade_url(streamer: &str, base_url: &str) -> Result<String> {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetViewership {
+    /// constant: "minute-watched"
+    pub event: String,
+    pub properties: MinuteWatched,
+}
+
 pub async fn set_viewership(
     user_name: String,
     user_id: u32,
@@ -87,19 +95,13 @@ pub async fn set_viewership(
     spade_url: &str,
     access_token: &str,
 ) -> Result<()> {
-    #[derive(Debug, Serialize)]
-    #[serde(rename_all = "camelCase")]
-    pub struct Root {
-        pub event: &'static str,
-        pub properties: MinuteWatched,
-    }
-
-    let watch_event = Root {
-        event: "minute-watched",
+    let watch_event = SetViewership {
+        event: "minute-watched".to_owned(),
         properties: MinuteWatched::from_streamer_info(user_name, user_id, channel_id, info),
     };
 
     let body = serde_json::to_string(&[watch_event])?;
+    // tracing::trace!("{body}");
 
     let client = reqwest::Client::new();
     let res = client
@@ -116,6 +118,5 @@ pub async fn set_viewership(
         return Err(eyre!("Failed to set viewership"));
     }
 
-    res.text().await?;
     Ok(())
 }

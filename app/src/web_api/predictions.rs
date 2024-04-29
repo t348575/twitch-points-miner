@@ -129,7 +129,7 @@ async fn make_prediction(
         s.predictions.get_mut(&payload.event_id).unwrap().1 = true;
         Ok(StatusCode::CREATED)
     } else {
-        match prediction_logic(s, &payload.event_id).await {
+        match prediction_logic(s, &payload.event_id) {
             Ok(Some((o, p))) => {
                 place_bet(
                     payload.event_id.clone(),

@@ -188,6 +188,12 @@ impl From<crate::analytics::AnalyticsError> for ApiError {
     }
 }
 
+impl From<Report> for ApiError {
+    fn from(value: Report) -> Self {
+        ApiError::InternalError(value.to_string())
+    }
+}
+
 impl ApiError {
     fn twitch_api_error(err: Report) -> ApiError {
         ApiError::TwitchAPIError(err.to_string())

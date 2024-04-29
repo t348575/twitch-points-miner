@@ -16,7 +16,6 @@ color-eyre = "0.6"
 utoipa = { version = "4", features = ["chrono"], optional = true }
 base64 = "0.22"
 flume = "0.11"
-futures = "0.3"
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
@@ -25,8 +24,12 @@ rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
 tracing = "0.1"
 dialoguer = "0.11"
-http = "1.1.0"
+testcontainers = { version = "0.16", optional = true }
+ctor = { version = "0.2", optional = true }
+rstest = { version = "0.19", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "chrono"], optional = true }
+futures-util = "0.3"
 
 [features]
 web_api = ["dep:utoipa", "twitch_api/utoipa"]
-testing = []
+testing = ["dep:testcontainers", "dep:ctor", "dep:rstest", "dep:tracing-subscriber"]
