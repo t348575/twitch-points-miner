@@ -22,9 +22,9 @@ ADD app app
 ADD common common
 COPY ["Cargo.toml", "Cargo.lock", "."]
 RUN perl -0777 -i -pe 's/members = \[[^\]]+\]/members = ["app", "common"]/igs' Cargo.toml
-RUN RUSTFLAGS="$RUSTFLAGS" cargo build --release --target x86_64-unknown-linux-musl
+RUN RUSTFLAGS="$RUSTFLAGS" CARGO_PROFILE_RELEASE_LTO=true cargo build --release --target x86_64-unknown-linux-musl
 
-FROM busybox AS runtime
+FROM scratch AS runtime
 COPY --from=frontend /dist /dist
 WORKDIR /
 ENV LOG=info

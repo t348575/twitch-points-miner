@@ -9,3 +9,4 @@ resolver = "2"
 [profile.release]
 opt-level = 'z'
 strip = true
+codegen-units = 1

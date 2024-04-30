@@ -6,10 +6,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use color_eyre::{
-    eyre::{eyre, Context, ContextCompat},
-    Result,
-};
 use common::{
     config::{self, filters::filter_matches, strategy, Config, ConfigType, StreamerConfig},
     remove_duplicates_in_place,
@@ -18,6 +14,7 @@ use common::{
         ConfigTypeRef, StreamerConfigRef, StreamerConfigRefWrapper, StreamerInfo, StreamerState,
     },
 };
+use eyre::{eyre, Context, ContextCompat, Result};
 use flume::{unbounded, Receiver, Sender};
 use indexmap::IndexMap;
 use rand::Rng;
@@ -26,6 +23,7 @@ use tokio::{spawn, sync::RwLock, time::sleep};
 use tracing::{debug, error, info, trace, warn};
 use twitch_api::{
     pubsub::{
+        community_points::CommunityPointsUserV1Reply,
         predictions::{Event, PredictionsChannelV1},
         raid::{Raid, RaidReply},
         video_playback::VideoPlaybackReply,
@@ -59,6 +57,8 @@ pub struct PubSub {
     pub ws_tx: Sender<Request>,
     #[serde(skip)]
     pub analytics: Arc<crate::analytics::AnalyticsWrapper>,
+    #[serde(skip)]
+    pub log_path: Option<String>,
 }
 
 impl PubSub {
@@ -76,6 +76,7 @@ impl PubSub {
         base_url: &str,
         ws_tx: Sender<Request>,
         analytics: Arc<crate::analytics::AnalyticsWrapper>,
+        log_path: Option<String>,
     ) -> Result<PubSub> {
         let mut configs = channels
             .iter()
@@ -140,6 +141,7 @@ impl PubSub {
             analytics,
             gql,
             base_url: base_url.to_string(),
+            log_path,
         })
     }
 
@@ -159,6 +161,7 @@ impl PubSub {
             gql: Default::default(),
             base_url: Default::default(),
             ws_tx,
+            log_path: Default::default(),
         }
     }
 
@@ -225,11 +228,16 @@ impl PubSub {
                     Topics::Raid(Raid { channel_id }),
                 ];
 
+                let streamer = self
+                    .streamers
+                    .get_mut(&UserId::from_str(&channel_id.to_string()).unwrap())
+                    .context("Streamer does not exist")?;
                 match *reply {
                     VideoPlaybackReply::StreamUp {
                         server_time: _,
                         play_delay: _,
                     } => {
+                        info!("{} is live", streamer.info.channel_name);
                         for item in topics.into_iter().map(Request::Listen) {
                             self.ws_tx
                                 .send_async(item)
@@ -238,6 +246,8 @@ impl PubSub {
                         }
                     }
                     VideoPlaybackReply::StreamDown { server_time: _ } => {
+                        streamer.info.live = false;
+                        info!("{} is not live", streamer.info.channel_name);
                         for item in topics.into_iter().map(Request::UnListen) {
                             self.ws_tx
                                 .send_async(item)
@@ -266,13 +276,22 @@ impl PubSub {
             }
             TopicData::CommunityPointsUserV1 { topic, reply } => {
                 debug!("Got CommunityPointsUserV1 {:#?}", topic);
-                let streamer = UserId::from_str(&reply.data.channel_id)?;
 
-                if self.streamers.contains_key(&streamer) {
-                    debug!("Channel points updated for {}", streamer);
-                    let s = self.streamers.get_mut(&streamer).unwrap();
-                    s.points = reply.data.balance.balance as u32;
-                    s.last_points_refresh = Instant::now();
+                if let CommunityPointsUserV1Reply::ClaimClaimed {
+                    timestamp: _,
+                    claim,
+                } = *reply
+                {
+                    if claim.user_id.as_str().ne(&self.user_id) {
+                        return Ok(());
+                    };
+
+                    if self.streamers.contains_key(&claim.channel_id) {
+                        debug!("Channel points updated for {}", claim.channel_id);
+                        let s = self.streamers.get_mut(&claim.channel_id).unwrap();
+                        s.points = claim.point_gain.total_points as u32;
+                        s.last_points_refresh = Instant::now();
+                    }
                 }
             }
             TopicData::Raid { topic, reply } => {
@@ -793,9 +812,8 @@ mod test {
     };
 
     use chrono::Local;
-    use color_eyre::Result;
+    use eyre::Result;
     use flume::unbounded;
-    use reqwest::get;
     use rstest::rstest;
     use tokio::sync::RwLock;
     use twitch_api::{
@@ -1014,11 +1032,11 @@ mod test {
 
     macro_rules! watch_stream_eq {
         ($watching_uri:expr,$eq:expr) => {
-            let res: Vec<UserId> = get(&$watching_uri).await?.json().await?;
+            let res: Vec<UserId> = ureq::get(&$watching_uri).call()?.into_json()?;
             assert_eq!(res, $eq)
         };
         ($watching_uri:expr,$eq:expr,$user_ids:tt) => {
-            let res: Vec<UserId> = get(&$watching_uri).await?.json().await?;
+            let res: Vec<UserId> = ureq::get(&$watching_uri).call()?.into_json()?;
             assert_eq!(res.len(), $eq.len());
             for item in res {
                 assert!($user_ids.contains(&item));
@@ -1040,10 +1058,24 @@ mod test {
 
         let user_ids = vec![UserId::from_static("1"), UserId::from_static("2")];
         pubsub.streamers = HashMap::from([
-            (user_ids[0].clone(), StreamerState::new(true, user_ids[0].as_str().to_owned())),
-            (user_ids[1].clone(), StreamerState::new(true, user_ids[1].as_str().to_owned())),
+            (
+                user_ids[0].clone(),
+                StreamerState::new(true, user_ids[0].as_str().to_owned()),
+            ),
+            (
+                user_ids[1].clone(),
+                StreamerState::new(true, user_ids[1].as_str().to_owned()),
+            ),
         ]);
-        pubsub.config.streamers = user_ids.iter().map(|x| { (x.to_string(), ConfigType::Specific(StreamerConfig::default()) )}).collect();
+        pubsub.config.streamers = user_ids
+            .iter()
+            .map(|x| {
+                (
+                    x.to_string(),
+                    ConfigType::Specific(StreamerConfig::default()),
+                )
+            })
+            .collect();
 
         let pubsub = Arc::new(RwLock::new(pubsub.clone()));
         let watching_uri = format!("http://localhost:{}/watching", container.port);
@@ -1078,14 +1110,13 @@ mod test {
 
         let mut watch_streak = Vec::new();
         let use_watch_streak = true;
-        let mock = reqwest::Client::new();
 
         super::watch_stream::inner(&pubsub, &mut watch_streak, use_watch_streak, &rx).await?;
         watch_stream_eq!(watching_uri, [user_ids[0].clone()]);
 
         pubsub.write().await.streamers.get_mut(&user_ids[1]).unwrap().info.live = true;
         tx.send_async(user_ids[1].clone()).await?;
-        mock.delete(&watching_uri).send().await?;
+        ureq::delete(&watching_uri).call()?;
         for _ in 0..30 {
             super::watch_stream::inner(&pubsub, &mut watch_streak, use_watch_streak, &rx).await?;
             watch_stream_eq!(watching_uri, user_ids[0..2], user_ids);
@@ -1096,7 +1127,7 @@ mod test {
 
         pubsub.write().await.streamers.get_mut(&user_ids[2]).unwrap().info.live = true;
         tx.send_async(user_ids[2].clone()).await?;
-        mock.delete(&watching_uri).send().await?;
+        ureq::delete(&watching_uri).call()?;
         for _ in 0..30 {
             super::watch_stream::inner(&pubsub, &mut watch_streak, use_watch_streak, &rx).await?;
             watch_stream_eq!(watching_uri, [user_ids[0].clone(), user_ids[2].clone()], user_ids);
@@ -1106,23 +1137,23 @@ mod test {
         watch_stream_eq!(watching_uri, [user_ids[0].clone(), user_ids[2].clone()], user_ids);
 
         pubsub.write().await.config.watch_priority = Some(vec![user_ids[2].as_str().to_owned()]);
-        mock.delete(&watching_uri).send().await?;
+        ureq::delete(&watching_uri).call()?;
         super::watch_stream::inner(&pubsub, &mut watch_streak, use_watch_streak, &rx).await?;
         super::watch_stream::inner(&pubsub, &mut watch_streak, use_watch_streak, &rx).await?;
         watch_stream_eq!(watching_uri, [user_ids[0].clone(), user_ids[2].clone()], user_ids);
 
         pubsub.write().await.streamers.get_mut(&user_ids[2]).unwrap().info.live = false;
-        mock.delete(&watching_uri).send().await?;
+        ureq::delete(&watching_uri).call()?;
         super::watch_stream::inner(&pubsub, &mut watch_streak, use_watch_streak, &rx).await?;
         watch_stream_eq!(watching_uri, user_ids[0..2], user_ids);
 
         pubsub.write().await.streamers.get_mut(&user_ids[0]).unwrap().info.live = false;
-        mock.delete(&watching_uri).send().await?;
+        ureq::delete(&watching_uri).call()?;
         super::watch_stream::inner(&pubsub, &mut watch_streak, use_watch_streak, &rx).await?;
         watch_stream_eq!(watching_uri, user_ids[1..2], user_ids);
 
         pubsub.write().await.streamers.get_mut(&user_ids[1]).unwrap().info.live = false;
-        mock.delete(&watching_uri).send().await?;
+        ureq::delete(&watching_uri).call()?;
         super::watch_stream::inner(&pubsub, &mut watch_streak, use_watch_streak, &rx).await?;
         watch_stream_eq!(watching_uri, Vec::<UserId>::new(), user_ids);
 

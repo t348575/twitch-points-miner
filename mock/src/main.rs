@@ -10,12 +10,12 @@ use axum::{
     Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE, Engine};
-use color_eyre::eyre::Result;
 use common::twitch::{
     api::SetViewership,
     gql::{self, GqlRequest, Variables},
     traverse_json,
 };
+use eyre::Result;
 use http::StatusCode;
 use serde::Deserialize;
 use tokio::{signal, sync::Mutex};

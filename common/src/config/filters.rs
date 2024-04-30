@@ -1,5 +1,5 @@
 use chrono::{DateTime, Local};
-use color_eyre::Result;
+use eyre::Result;
 use serde::{Deserialize, Serialize};
 use twitch_api::pubsub::predictions::Event;
 

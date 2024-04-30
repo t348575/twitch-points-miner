@@ -1,13 +1,15 @@
-# twitch-points-miner
+<h1 align="center">twitch-points-miner</h1>
 <p align="center">
-<img alt="Views" src="https://xn4nc029ta.execute-api.ap-south-1.amazonaws.com/default/repo-view-counter?repo=twitch-points-miner">
-<img alt="Docker Image Version" src="https://img.shields.io/docker/v/t348575/twitch-points-miner">
-<img alt="Docker Pulls" src="https://img.shields.io/docker/pulls/t348575/twitch-points-miner">
-<img alt="Docker Image Size" src="https://img.shields.io/docker/image-size/t348575/twitch-points-miner">
+  <img alt="Views" src="https://xn4nc029ta.execute-api.ap-south-1.amazonaws.com/default/repo-view-counter?repo=twitch-points-miner">
+  <img alt="Docker Image Version" src="https://img.shields.io/docker/v/t348575/twitch-points-miner">
+  <img alt="Docker Pulls" src="https://img.shields.io/docker/pulls/t348575/twitch-points-miner">
+  <img alt="Docker Image Size" src="https://img.shields.io/docker/image-size/t348575/twitch-points-miner">
 </p>
 
 
-A very lightweight twitch points miner, using only a few MB of ram, inspired by [Twitch-Channel-Points-Miner-v2](https://github.com/rdavydov/Twitch-Channel-Points-Miner-v2).
+<p align="center">
+  A very lightweight twitch points miner, using only a few MB of ram, inspired by <a href="https://github.com/rdavydov/Twitch-Channel-Points-Miner-v2">Twitch-Channel-Points-Miner-v2</a>.
+</p>
 
 ![Landing page](assets/tpm-ui-landing.png "Web UI")
 
@@ -32,28 +34,28 @@ This is the suggested way of using twitch-points-miner.
 
 Pull [t348575/twitch-points-miner](https://hub.docker.com/r/t348575/twitch-points-miner), be sure to pass your config file, and a volume for your `tokens.json`, as well as appropriate CLI arguments.
 
-Run with stdin attached the first time, in order to authenticate your twitch account. Place your `config.yaml` file in the `data` dir.
+Run with stdin attached the first time, in order to authenticate your twitch account.
 ```
 docker run -i -t -v ./data:/data t348575/twitch-points-miner --token /data/tokens.json
 ```
-Once it is running and the login flow is complete, CTRL+C then just attach the tokens file in subsequent runs
-
-**Note**: Don't forget to add /analytics.db as a docker volume, or specify the analytics database path in the config file.
+Once it is running and the login flow is complete, CTRL+C then just attach the tokens file in subsequent runs.
 
 ## Docker compose
-**Note**: You might want to touch all of the attached files first, or docker might create them as directories.
+An example docker compose file
 ```yaml
 services:
   twitch-points-miner:
     container_name: twitch-points-miner
     image: t348575/twitch-points-miner:latest
     volumes:
-      - ./data/tokens.json:/tokens.json
-      - ./config.yaml:/config.yaml
-      - ./analytics.db:/analytics.db
-      - ./twitch-points-miner.log:/twitch-points-miner.log
+      - ./data:/data
+      - ./config.yaml:/config.yaml # change this if needed to your config file
     command:
-      - --log-to-file
+      - -t /data/tokens.json
+      - --analytics-db
+      - /data/analytics.db
+      - --log-file
+      - /data/twitch-points-miner.log
     ports:
       - 3000:3000 # Web UI port
     environment:

@@ -1,4 +1,4 @@
-use std::{io::SeekFrom, path::Path, sync::Arc};
+use std::{io::SeekFrom, sync::Arc};
 
 use axum::{
     extract::{Query, State},
@@ -8,12 +8,12 @@ use axum::{
     serve::Serve,
     Json, Router,
 };
-use color_eyre::eyre::{Context, Report, Result};
 use common::{
     config::{filters::Filter, strategy::*, PredictionConfig, StreamerConfig},
     twitch::auth::Token,
     types::*,
 };
+use eyre::{Context, Report, Result};
 use serde::Deserialize;
 use tokio::{
     fs::File,
@@ -130,7 +130,7 @@ pub async fn get_api_server(
         .nest("/predictions", predictions.0)
         .nest("/config", config.0)
         .nest("/analytics", analytics)
-        .route("/logs", get(get_logs))
+        .route("/logs", get(get_logs).with_state(pubsub.clone()))
         .route("/", get(app_state).with_state(pubsub.clone()));
 
     let router = Router::new()
@@ -314,16 +314,20 @@ struct LogQuery {
     ),
     params(LogQuery)
 )]
-async fn get_logs(Query(log_query): Query<LogQuery>) -> Result<Html<String>, ApiError> {
-    if !Path::new("twitch-points-miner.log").exists() {
+async fn get_logs(
+    State(data): State<ApiState>,
+    Query(log_query): Query<LogQuery>,
+) -> Result<Html<String>, ApiError> {
+    let log_path = data.read().await.log_path.clone();
+    if log_path.is_none() {
         return Ok(Html(
-            "Logging to file not enabled, use the --log-to-file flag!".to_string(),
+            "Logging to file not enabled, use the --log-file flag!".to_string(),
         ));
     }
 
     let mut file = tokio::fs::OpenOptions::new()
         .read(true)
-        .open("twitch-points-miner.log")
+        .open(log_path.unwrap())
         .await
         .context("Opening log file")
         .map_err(ApiError::internal_error)?;

@@ -1,4 +1,4 @@
-use color_eyre::{eyre::eyre, Result};
+use eyre::{eyre, Result};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
@@ -14,7 +14,6 @@ pub struct Config {
     pub streamers: IndexMap<String, ConfigType>,
     pub presets: Option<IndexMap<String, StreamerConfig>>,
     pub watch_streak: Option<bool>,
-    pub analytics_db: Option<String>,
 }
 
 pub trait Normalize {

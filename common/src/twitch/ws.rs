@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use color_eyre::eyre::{Context, Report, Result};
+use eyre::{Context, Report, Result};
 use flume::{Receiver, RecvTimeoutError, Sender};
 use futures_util::{
     stream::{SplitSink, SplitStream},
@@ -145,6 +145,7 @@ impl WsPool {
 
                     // Send a not-live message back to other listeners, so they can destruct any events they have subscribed to
                     if let Topics::VideoPlaybackById(VideoPlaybackById { channel_id }) = topic {
+                        info!("Unlisten on stream {channel_id}");
                         _ = self
                             .tx
                             .send_async(TopicData::VideoPlaybackById {
@@ -473,7 +474,7 @@ async fn ws_reader(
                     }
                     _ => warn!("Unknown response {:#?}", r),
                 },
-                Err(err) => warn!("Failed to parse ws message {:#?}", err),
+                Err(err) => warn!("Failed to parse ws message {:#?} \nmessage {m}", err),
             }
         }
     }
@@ -482,7 +483,6 @@ async fn ws_reader(
 
 #[cfg(test)]
 mod test {
-    use reqwest::get;
     use rstest::rstest;
 
     use super::*;
@@ -540,11 +540,7 @@ mod test {
         let container = container.await;
         let pubsub_uri = format!("http://localhost:{}/pubsub", container.port);
 
-        let mock = reqwest::Client::new();
-        mock.post(format!("{pubsub_uri}/test_mode"))
-            .json(&json!("Reconnect"))
-            .send()
-            .await?;
+        ureq::post(&format!("{pubsub_uri}/test_mode")).send_json(&json!("Reconnect"))?;
 
         let (pool, tx, (_, _)) =
             WsPool::start("test", format!("ws://localhost:{}", container.port)).await;
@@ -555,10 +551,9 @@ mod test {
             .await;
 
         loop {
-            let mut mock: serde_json::Value = get(format!("{pubsub_uri}/test_stats"))
-                .await?
-                .json()
-                .await?;
+            let mut mock: serde_json::Value = ureq::get(&format!("{pubsub_uri}/test_stats"))
+                .call()?
+                .into_json()?;
             let connect_count = traverse_json(&mut mock, ".Reconnect.count");
             if connect_count.is_none() {
                 sleep(Duration::from_millis(1)).await;
@@ -586,11 +581,7 @@ mod test {
         let container = container.await;
         let pubsub_uri = format!("http://localhost:{}/pubsub", container.port);
 
-        let mock = reqwest::Client::new();
-        mock.post(format!("{pubsub_uri}/test_mode"))
-            .json(&json!("RetryCommand"))
-            .send()
-            .await?;
+        ureq::post(&format!("{pubsub_uri}/test_mode")).send_json(&json!("RetryCommand"))?;
 
         let (pool, tx, (_, _)) =
             WsPool::start("test", format!("ws://localhost:{}", container.port)).await;
@@ -601,10 +592,9 @@ mod test {
             .await;
 
         loop {
-            let mut mock: serde_json::Value = get(format!("{pubsub_uri}/test_stats"))
-                .await?
-                .json()
-                .await?;
+            let mut mock: serde_json::Value = ureq::get(&format!("{pubsub_uri}/test_stats"))
+                .call()?
+                .into_json()?;
 
             let connect_count = traverse_json(&mut mock, ".RetryCommand.count");
             if connect_count.unwrap().as_i64().unwrap() == 2 {
@@ -625,11 +615,7 @@ mod test {
         let container = container.await;
         let pubsub_uri = format!("http://localhost:{}/pubsub", container.port);
 
-        let mock = reqwest::Client::new();
-        mock.post(format!("{pubsub_uri}/test_mode"))
-            .json(&json!("ScaleConnections"))
-            .send()
-            .await?;
+        ureq::post(&format!("{pubsub_uri}/test_mode")).send_json(&json!("ScaleConnections"))?;
 
         let (pool, tx, (_, rx)) =
             WsPool::start("test", format!("ws://localhost:{}", container.port)).await;
@@ -642,10 +628,9 @@ mod test {
         }
 
         loop {
-            let mut mock: serde_json::Value = get(format!("{pubsub_uri}/test_stats"))
-                .await?
-                .json()
-                .await?;
+            let mut mock: serde_json::Value = ureq::get(&format!("{pubsub_uri}/test_stats"))
+                .call()?
+                .into_json()?;
 
             let topics = traverse_json(&mut mock, ".ScaleConnections.topics");
             if topics.unwrap().as_i64().unwrap() == 50 {
@@ -664,10 +649,9 @@ mod test {
             .await;
 
         loop {
-            let mut mock: serde_json::Value = get(format!("{pubsub_uri}/test_stats"))
-                .await?
-                .json()
-                .await?;
+            let mut mock: serde_json::Value = ureq::get(&format!("{pubsub_uri}/test_stats"))
+                .call()?
+                .into_json()?;
 
             let topics = traverse_json(&mut mock, ".ScaleConnections.topics");
             if topics.unwrap().as_i64().unwrap() == 51 {

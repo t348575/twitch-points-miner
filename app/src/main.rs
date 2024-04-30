@@ -2,8 +2,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use clap::Parser;
-use color_eyre::eyre::{eyre, Context, Result};
 use common::twitch::ws::{Request, WsPool};
+use eyre::{eyre, Context, Result};
 use tokio::sync::RwLock;
 use tokio::{fs, spawn};
 use tracing::info;
@@ -35,11 +35,14 @@ struct Args {
     #[arg(short, long, default_value_t = String::from("tokens.json"))]
     token: String,
     /// Log to file
-    #[arg(short, long, default_value_t = false)]
-    log_to_file: bool,
+    #[arg(short, long)]
+    log_file: Option<String>,
     /// Enable analytics, enabled by default
     #[arg(long, default_value_t = true)]
     analytics: bool,
+    /// Analytics database path
+    #[arg(long, default_value_t = String::from("analytics.db"))]
+    analytics_db: String,
 }
 
 const BASE_URL: &str = "https://twitch.tv";
@@ -58,7 +61,6 @@ fn get_layer<S>(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    color_eyre::install()?;
     let args = Args::parse();
 
     let log_level = std::env::var("LOG").unwrap_or("warn".to_owned());
@@ -70,10 +72,12 @@ async fn main() -> Result<()> {
         )
         .with(get_layer(tracing_subscriber::fmt::layer()));
 
-    let file_appender = tracing_appender::rolling::never(".", "twitch-points-miner.log");
+    let file_appender = tracing_appender::rolling::never(
+        ".",
+        args.log_file.clone().unwrap_or("log.log".to_owned()),
+    );
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-
-    if args.log_to_file {
+    if args.log_file.is_some() {
         tracing_opts
             .with(get_layer(tracing_subscriber::fmt::layer()).with_writer(non_blocking))
             .init();
@@ -136,9 +140,7 @@ async fn main() -> Result<()> {
     }
 
     let analytics = if args.analytics {
-        Arc::new(analytics::AnalyticsWrapper::new(
-            &c.analytics_db.unwrap_or("analytics.db".to_owned()),
-        )?)
+        Arc::new(analytics::AnalyticsWrapper::new(&args.analytics_db)?)
     } else {
         Arc::new(analytics::AnalyticsWrapper::empty())
     };
@@ -237,6 +239,7 @@ async fn main() -> Result<()> {
         BASE_URL,
         ws_tx,
         analytics,
+        args.log_file,
     )?));
 
     let pubsub = spawn(pubsub::PubSub::run(ws_rx, pubsub_data.clone(), gql));

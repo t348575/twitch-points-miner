@@ -59,4 +59,3 @@ presets:
             max_value: 0
             percent: 0.0
       filters: []
-analytics_db: /my/custom/path/to/analytics

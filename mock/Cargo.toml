@@ -1,12 +1,12 @@
 [package]
 name = "mock"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2021"
 
 [dependencies]
 axum = { version = "0.7", features = ["macros", "ws"] }
 base64 = "0.22"
-color-eyre = "0.6"
+eyre = "0.6"
 common = { path = "../common" }
 http = "1.1.0"
 serde = { version = "1", features = ["derive"] }
@@ -15,4 +15,4 @@ tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.5", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-twitch_api = { features = ["pubsub", "unsupported", "mock"], git = "https://github.com/t348575/twitch_api", branch = "hidden_pubsubs" }
+twitch_api = { features = ["tpm", "mock"], default-features = false, git = "https://github.com/t348575/twitch_api", branch = "hidden_pubsubs" }
