@@ -28,6 +28,19 @@ impl Default for StreamerState {
     }
 }
 
+impl StreamerState {
+    pub fn new(live: bool, channel_name: String) -> Self {
+        StreamerState {
+            info: StreamerInfo {
+                live,
+                channel_name,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct StreamerConfigRef {
@@ -74,7 +87,7 @@ impl StreamerConfigRefWrapper {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub enum ConfigTypeRef {
     Preset(String),
@@ -82,7 +95,7 @@ pub enum ConfigTypeRef {
     Specific,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct StreamerInfo {
@@ -101,7 +114,7 @@ impl StreamerInfo {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct Game {
@@ -118,9 +131,10 @@ pub struct MinuteWatched {
     pub channel: String,
     pub game: Option<String>,
     pub game_id: Option<String>,
-    /// constant, "site"
-    pub player: &'static str,
-    pub player_state: &'static str,
+    /// constant: "site"
+    pub player: String,
+    /// constant: "Playing"
+    pub player_state: String,
     /// Login user ID
     pub user_id: u32,
     pub login: String,
@@ -140,9 +154,9 @@ impl MinuteWatched {
             channel: value.channel_name,
             game: value.game.clone().map(|x| x.name),
             game_id: value.game.map(|x| x.id),
-            player: "site",
+            player: "site".to_owned(),
             user_id,
-            player_state: "Playing",
+            player_state: "Playing".to_owned(),
             login: user_name,
         }
     }

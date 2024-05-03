@@ -1,12 +1,16 @@
+use std::thread::spawn;
+
 use chrono::{Local, NaiveDateTime};
 use diesel::{
     deserialize, result::DatabaseErrorKind, row::NamedRow, sqlite::Sqlite, Connection,
     ConnectionError, ExpressionMethods, QueryDsl, QueryableByName, RunQueryDsl, SqliteConnection,
 };
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
+use flume::{Receiver, Sender};
 use serde::Serialize;
 use thiserror::Error;
 use tokio::sync::Mutex;
+use tracing::{error, trace};
 
 use crate::analytics::model::{PredictionBet, PredictionBetWrapper};
 
@@ -44,12 +48,8 @@ impl AnalyticsError {
 }
 
 impl AnalyticsWrapper {
-    pub fn new(url: &str) -> Result<AnalyticsWrapper, AnalyticsError> {
-        Ok(AnalyticsWrapper(Mutex::new(Some(Analytics::new(url)?))))
-    }
-
-    pub fn empty() -> Self {
-        Self(tokio::sync::Mutex::new(None))
+    pub fn new(analytics: Analytics) -> AnalyticsWrapper {
+        AnalyticsWrapper(Mutex::new(Some(analytics)))
     }
 
     pub async fn execute<F, R>(&self, func: F) -> Result<R, AnalyticsError>
@@ -65,16 +65,38 @@ impl AnalyticsWrapper {
 }
 
 pub struct Analytics {
-    conn: SqliteConnection,
+    conn: Option<SqliteConnection>,
 }
 
+pub type Request = Box<dyn Fn(&mut Analytics) -> Result<(), AnalyticsError> + Send>;
+
 impl Analytics {
-    pub fn new(url: &str) -> Result<Analytics, AnalyticsError> {
+    pub fn new(url: &str) -> Result<(Analytics, Sender<Request>), AnalyticsError> {
         let mut conn = SqliteConnection::establish(url)?;
+        let conn_thread = SqliteConnection::establish(url)?;
         _ = conn
             .run_pending_migrations(MIGRATIONS)
             .map_err(AnalyticsError::DbInit);
-        Ok(Analytics { conn })
+
+        let (tx, rx) = flume::unbounded();
+        spawn(move || {
+            Analytics::run(
+                Analytics {
+                    conn: Some(conn_thread),
+                },
+                rx,
+            );
+        });
+        Ok((Analytics { conn: Some(conn) }, tx))
+    }
+
+    pub fn run(mut self, rx: Receiver<Request>) {
+        while let Ok(data) = rx.recv() {
+            trace!("got analytics request");
+            if let Err(err) = data(&mut self) {
+                error!("{err:#?}");
+            }
+        }
     }
 
     pub fn insert_streamer(&mut self, id: i32, name: String) -> Result<bool, AnalyticsError> {
@@ -83,7 +105,7 @@ impl Analytics {
                 id,
                 name: name.clone(),
             })
-            .execute(&mut self.conn);
+            .execute(self.conn.as_mut().unwrap());
         if let Err(diesel::result::Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) =
             res
         {
@@ -108,7 +130,7 @@ impl Analytics {
                 points_info: points_info.clone(),
                 created_at: Local::now().naive_local(),
             })
-            .execute(&mut self.conn)
+            .execute(self.conn.as_mut().unwrap())
             .map_err(|err| {
                 AnalyticsError::from_diesel_error(
                     err,
@@ -123,20 +145,23 @@ impl Analytics {
         c_id: i32,
         pv: i32,
         pi: PointsInfo,
-    ) -> Result<(), AnalyticsError> {
+    ) -> Result<bool, AnalyticsError> {
         use schema::points::dsl::*;
         let current_pv: Result<i32, diesel::result::Error> = points
             .filter(channel_id.eq(c_id))
             .order(created_at.desc())
             .select(points_value)
-            .first(&mut self.conn);
+            .first(self.conn.as_mut().unwrap());
 
-        let mut func = || self.insert_points(c_id, pv, pi.clone());
+        let mut func = || {
+            self.insert_points(c_id, pv, pi.clone())?;
+            Ok(true)
+        };
 
         match current_pv {
             Ok(current_pv) => {
                 if current_pv == pv {
-                    Ok(())
+                    Ok(false)
                 } else {
                     func()
                 }
@@ -152,20 +177,44 @@ impl Analytics {
     }
 
     pub fn upsert_prediction(&mut self, prediction: &Prediction) -> Result<(), AnalyticsError> {
-        let res = diesel::insert_into(schema::predictions::table)
-            .values(prediction)
-            .execute(&mut self.conn);
+        use schema::predictions::dsl::*;
+        let last_prediction_id = predictions
+            .filter(channel_id.eq(&prediction.channel_id))
+            .order_by(id.desc())
+            .select(prediction_id)
+            .first::<String>(self.conn.as_mut().unwrap());
 
-        if let Err(diesel::result::Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) =
-            res
-        {
-            return Ok(());
+        let mut insert_prediction = |prediction: &Prediction| -> Result<(), AnalyticsError> {
+            diesel::insert_into(schema::predictions::table)
+                .values(prediction)
+                .execute(self.conn.as_mut().unwrap())
+                .map_err(|err| {
+                    AnalyticsError::from_diesel_error(
+                        err,
+                        format!("Create prediction {prediction:?}"),
+                    )
+                })?;
+            Ok(())
+        };
+
+        match last_prediction_id {
+            Ok(last_prediction_id) => {
+                if last_prediction_id != prediction.prediction_id {
+                    insert_prediction(prediction)
+                } else {
+                    Ok(())
+                }
+            }
+            Err(err) => match err {
+                diesel::result::Error::NotFound => insert_prediction(prediction),
+                err => {
+                    return Err(AnalyticsError::from_diesel_error(
+                        err,
+                        format!("Upsert prediction {prediction:?}"),
+                    ))
+                }
+            },
         }
-
-        res.map_err(|err| {
-            AnalyticsError::from_diesel_error(err, format!("Create prediction {prediction:?}"))
-        })?;
-        Ok(())
     }
 
     pub fn place_bet(
@@ -183,7 +232,7 @@ impl Analytics {
                 outcome_id: o_id.to_owned(),
                 points: p,
             })))
-            .execute(&mut self.conn)
+            .execute(self.conn.as_mut().unwrap())
             .map_err(|err| {
                 AnalyticsError::from_diesel_error(err, format!("Place bet on {c_id} event {p_id}"))
             })?;
@@ -207,7 +256,7 @@ impl Analytics {
                 outcomes.eq(o_s),
                 closed_at.eq(Some(c_at)),
             ))
-            .execute(&mut self.conn)
+            .execute(self.conn.as_mut().unwrap())
             .map_err(|err| {
                 AnalyticsError::from_diesel_error(
                     err,
@@ -225,6 +274,7 @@ impl Analytics {
     ) -> Result<Vec<TimelineResult>, AnalyticsError> {
         use diesel::sql_query;
 
+        trace!("Timeline {from} {to} {channels:?}");
         let query = format!(
             r#"select * from points left join predictions on points_info ->> '$.Prediction[0]' == prediction_id and points_info ->> '$.Prediction[1]' == predictions.id
                 where points.created_at >= '{}' and points.created_at <= '{}' and points.channel_id in ({}) order by points.created_at asc"#,
@@ -238,7 +288,7 @@ impl Analytics {
         );
 
         let items = sql_query(query)
-            .get_results(&mut self.conn)
+            .get_results(self.conn.as_mut().unwrap())
             .map_err(|err| AnalyticsError::from_diesel_error(err, format!("Points timeline")))?;
         Ok(items)
     }
@@ -250,7 +300,7 @@ impl Analytics {
             .filter(prediction_id.eq(p_id))
             .order(created_at.desc())
             .select(id)
-            .first(&mut self.conn)
+            .first(self.conn.as_mut().unwrap())
             .map_err(|err| {
                 AnalyticsError::from_diesel_error(err, format!("Last prediction by ID"))
             })?;
@@ -269,7 +319,7 @@ impl Analytics {
             .filter(prediction_id.eq(p_id))
             .order(id.desc())
             .select(Prediction::as_select())
-            .first(&mut self.conn);
+            .first(self.conn.as_mut().unwrap());
         match res {
             Ok(res) => Ok(Some(res)),
             Err(err) => match err {

@@ -52,11 +52,10 @@ presets:
     follow_raid: false
     prediction:
       strategy: !detailed
-      default:
-        max_percentage: 0.0
-        min_percentage: 0.0
-        points:
-          max_value: 0
-          percent: 0.0
+        default:
+          max_percentage: 0.0
+          min_percentage: 0.0
+          points:
+            max_value: 0
+            percent: 0.0
       filters: []
-analytics_db: /my/custom/path/to/analytics

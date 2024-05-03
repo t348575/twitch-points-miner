@@ -5,13 +5,13 @@
   import { Button } from "$lib/components/ui/button";
   import { Separator } from "$lib/components/ui/separator";
   import { Plus, X } from "lucide-svelte";
-  import DetailedStrategy from "./strategy/DetailedStrategy.svelte";
-  import { type FilterType, type ValidateStrategy } from "./common";
-  import type { components } from "./api";
+  import DetailedStrategy from "../../../strategy/DetailedStrategy.svelte";
+  import { type FilterType, type ValidateStrategy } from "../../../common";
+  import type { components } from "../../../api";
   import {
     DETAILED_STRATEGY_ODDS_COMPARISON_TYPES,
     detailed_strategy_stringify,
-  } from "./strategy/strategy";
+  } from "../../../strategy/strategy";
     import type { Selected } from "bits-ui";
 
   export let filters: FilterType[];

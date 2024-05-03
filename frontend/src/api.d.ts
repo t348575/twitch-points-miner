@@ -321,6 +321,10 @@ export interface components {
             id: number;
             state: components["schemas"]["StreamerState"];
         };
+        LogQuery: {
+            page: number;
+            per_page: number;
+        };
         MakePrediction: {
             /** @description ID of the prediction */
             event_id: string;
@@ -402,6 +406,7 @@ export interface components {
             };
             user_id: string;
             user_name: string;
+            watching: components["schemas"]["StreamerState"][];
         };
         Strategy: {
             detailed: components["schemas"]["Detailed"];
@@ -639,7 +644,10 @@ export interface operations {
     };
     get_logs: {
         parameters: {
-            query?: never;
+            query: {
+                per_page: number;
+                page: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;

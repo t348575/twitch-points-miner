@@ -2,17 +2,22 @@ use std::path::Path;
 use std::sync::Arc;
 
 use clap::Parser;
-use color_eyre::eyre::{eyre, Context, Result};
-use flume::unbounded;
+use common::twitch::ws::{Request, WsPool};
+use eyre::{eyre, Context, Result};
 use tokio::sync::RwLock;
 use tokio::{fs, spawn};
 use tracing::info;
 use tracing_subscriber::fmt::format::{Compact, DefaultFields};
 use tracing_subscriber::fmt::time::ChronoLocal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use twitch_api::pubsub::community_points::CommunityPointsUserV1;
+use twitch_api::pubsub::video_playback::{VideoPlaybackById, VideoPlaybackReply};
+use twitch_api::pubsub::{TopicData, Topics};
+
+use crate::analytics::{Analytics, AnalyticsWrapper};
 
 mod analytics;
-mod live;
+// mod live;
 mod pubsub;
 mod web_api;
 
@@ -32,11 +37,11 @@ struct Args {
     #[arg(short, long, default_value_t = String::from("tokens.json"))]
     token: String,
     /// Log to file
-    #[arg(short, long, default_value_t = false)]
-    log_to_file: bool,
-    /// Enable analytics, enabled by default
-    #[arg(long, default_value_t = true)]
-    analytics: bool,
+    #[arg(short, long)]
+    log_file: Option<String>,
+    /// Analytics database path
+    #[arg(long, default_value_t = String::from("analytics.db"))]
+    analytics_db: String,
 }
 
 const BASE_URL: &str = "https://twitch.tv";
@@ -50,27 +55,28 @@ fn get_layer<S>(
 > {
     layer
         .with_timer(ChronoLocal::new("%v %k:%M:%S %z".to_owned()))
-        .with_target(false)
         .compact()
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    color_eyre::install()?;
     let args = Args::parse();
 
     let log_level = std::env::var("LOG").unwrap_or("warn".to_owned());
     let tracing_opts = tracing_subscriber::registry()
         .with(
             EnvFilter::new(format!("twitch_points_miner={log_level}"))
+                .add_directive(format!("common={log_level}").parse()?)
                 .add_directive(format!("tower_http::trace={log_level}").parse()?),
         )
         .with(get_layer(tracing_subscriber::fmt::layer()));
 
-    let file_appender = tracing_appender::rolling::never(".", "twitch-points-miner.log");
+    let file_appender = tracing_appender::rolling::never(
+        ".",
+        args.log_file.clone().unwrap_or("log.log".to_owned()),
+    );
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-
-    if args.log_to_file {
+    if args.log_file.is_some() {
         tracing_opts
             .with(get_layer(tracing_subscriber::fmt::layer()).with_writer(non_blocking))
             .init();
@@ -132,13 +138,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    let analytics = if args.analytics {
-        Arc::new(analytics::AnalyticsWrapper::new(
-            &c.analytics_db.unwrap_or("analytics.db".to_owned()),
-        )?)
-    } else {
-        Arc::new(analytics::AnalyticsWrapper::empty())
-    };
+    let (mut analytics, analytics_tx) = Analytics::new(&args.analytics_db)?;
 
     let channels = channels.into_iter().flatten().collect::<Vec<_>>();
     let points = gql
@@ -152,19 +152,9 @@ async fn main() -> Result<()> {
 
     for (c, p) in channels.iter().zip(&points) {
         let id = c.0.as_str().parse::<i32>()?;
-        let inserted = analytics
-            .execute(|analytics| analytics.insert_streamer(id, c.1.channel_name.clone()))
-            .await?;
+        let inserted = analytics.insert_streamer(id, c.1.channel_name.clone())?;
         if inserted {
-            analytics
-                .execute(|analytics| {
-                    analytics.insert_points(
-                        id,
-                        p.0 as i32,
-                        analytics::model::PointsInfo::FirstEntry,
-                    )
-                })
-                .await?;
+            analytics.insert_points(id, p.0 as i32, analytics::model::PointsInfo::FirstEntry)?;
         }
     }
 
@@ -177,14 +167,45 @@ async fn main() -> Result<()> {
         )
         .await?;
 
-    info!("Everything ok, starting twitch pubsub");
-    let (events_tx, events_rx) = unbounded::<live::Events>();
-    let live = spawn(live::run(
-        events_tx.clone(),
-        channels.clone(),
-        gql.clone(),
-        BASE_URL.to_owned(),
-    ));
+    info!("Config OK!");
+    let (ws_pool, ws_tx, (ws_data_tx, ws_rx)) = WsPool::start(
+        &token.access_token,
+        #[cfg(test)]
+        String::new(),
+    )
+    .await;
+
+    channels.iter().for_each(|x| {
+        let channel_id = x.0.as_str().parse().unwrap();
+
+        if x.1.live {
+            // send initial live messages
+            _ = ws_data_tx.send(TopicData::VideoPlaybackById {
+                topic: VideoPlaybackById { channel_id },
+                reply: Box::new(VideoPlaybackReply::StreamUp {
+                    server_time: 0.0,
+                    play_delay: 0,
+                }),
+            });
+        }
+
+        ws_tx
+            .send(Request::Listen(Topics::VideoPlaybackById(
+                VideoPlaybackById { channel_id },
+            )))
+            .expect("Could not add streamer to pubsub");
+    });
+    ws_tx
+        .send_async(Request::Listen(Topics::CommunityPointsUserV1(
+            CommunityPointsUserV1 {
+                channel_id: user_info.0.parse().unwrap(),
+            },
+        )))
+        .await
+        .context("Could not add user to pubsub")?;
+    // we definitely do not want to keep this in scope
+    drop(ws_data_tx);
+
     let pubsub_data = Arc::new(RwLock::new(pubsub::PubSub::new(
         c_original,
         args.config,
@@ -201,74 +222,32 @@ async fn main() -> Result<()> {
         user_info,
         gql.clone(),
         BASE_URL,
-        live,
-        events_tx,
-        analytics,
+        ws_tx,
+        Arc::new(AnalyticsWrapper::new(analytics)),
+        analytics_tx.clone(),
     )?));
 
     let pubsub = spawn(pubsub::PubSub::run(
-        token.clone(),
-        events_rx,
+        ws_rx,
         pubsub_data.clone(),
         gql,
+        analytics_tx,
     ));
 
     info!("Starting web api!");
 
-    let axum_server = web_api::get_api_server(args.address, pubsub_data, Arc::new(token)).await;
+    let axum_server = web_api::get_api_server(
+        args.address,
+        pubsub_data,
+        Arc::new(token),
+        &args.analytics_db,
+        args.log_file,
+    )
+    .await?;
 
     axum_server.await?;
     pubsub.await??;
+    ws_pool.await?;
 
     Ok(())
-}
-
-#[cfg(test)]
-pub mod test {
-    use rstest::fixture;
-    use testcontainers::{clients::Cli, core::WaitFor, Container, GenericImage};
-
-    #[ctor::ctor]
-    fn init() {
-        let mut child = std::process::Command::new("docker")
-            .arg("build")
-            .arg("-f")
-            .arg(format!(
-                "{}/../mock.dockerfile",
-                std::env::var("CARGO_MANIFEST_DIR").unwrap()
-            ))
-            .arg("--tag")
-            .arg("twitch-mock:latest")
-            .arg(format!(
-                "{}/../",
-                std::env::var("CARGO_MANIFEST_DIR").unwrap()
-            ))
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("Could not build twitch-mock:latest");
-        if !child.wait().expect("Could not run docker").success() {
-            panic!("Could not build twitch-mock:latest");
-        }
-    }
-
-    fn image() -> GenericImage {
-        GenericImage::new("twitch-mock", "latest")
-            .with_exposed_port(3000)
-            .with_wait_for(WaitFor::message_on_stdout("ready"))
-    }
-
-    #[fixture]
-    #[once]
-    fn docker() -> Cli {
-        Cli::default()
-    }
-
-    pub type TestContainer<'a> = Container<'a, GenericImage>;
-
-    #[fixture]
-    pub fn container<'a>(docker: &'a Cli) -> Container<'a, GenericImage> {
-        let container = docker.run(image());
-        container.start();
-        container
-    }
 }

@@ -12,9 +12,9 @@
     get_live_streamers,
     get_last_prediction,
     place_bet_streamer,
-  } from "./common";
+  } from "../common";
   import { get } from "svelte/store";
-  import type { components } from "./api";
+  import type { components } from "../api";
   import type { Selected } from "bits-ui";
   import { RefreshCcw } from "lucide-svelte";
 
@@ -35,6 +35,7 @@
   let outcome: string | undefined;
   let prediction_points: undefined | string = undefined;
   let error_message: undefined | string = undefined;
+  let prediction_time_up = false;
 
   $: make_prediction_class = `flex flex-col justify-center items-center ${live_streamers.length == 0 ? "opacity-25 pointer-events-none" : ""}`;
 
@@ -86,6 +87,8 @@
         preds[0] as string
       ] as PredictionType[];
       prediction = preds_list[0];
+
+      prediction_time_up = new Date(new Date(prediction?.created_at as string).getTime() + prediction?.prediction_window_seconds * 1000) > new Date();
       pred_total_points =
         prediction?.outcomes.reduce(
           (n, { total_points }) => (n += total_points),
@@ -210,8 +213,8 @@
           {/if}
         </div>
       </Card.Content>
-      {#if prediction && prediction_made == null || (prediction_made !== null && typeof prediction_made.placed_bet == 'string')}
-        <Card.Footer class="flex flex-col">
+      <Card.Footer class="flex flex-col">
+        {#if prediction && prediction_made == null || (prediction_made !== null && typeof prediction_made.placed_bet == 'string')}
           {#if outcome}
             <p class="m-2">
               Selected outcome: {prediction.outcomes.find((a) => a.id == outcome)
@@ -240,15 +243,15 @@
               without the filters
             </p>
           </div>
-        </Card.Footer>
-      {:else if prediction && prediction_made && typeof prediction_made.placed_bet !== 'string'}
-        <Card.Footer class="flex flex-col">
+        {:else if prediction && prediction_made && typeof prediction_made.placed_bet !== 'string'}
           Bet placed! Outcome: {prediction.outcomes.find(
             (a) => a.id == prediction_made?.placed_bet.Some.outcome_id,
           )?.title}
-          Points: {prediction_made?.placed_bet.Some.points}
-        </Card.Footer>
-      {/if}
+        Points: {prediction_made?.placed_bet.Some.points}
+        {:else if prediction && prediction_time_up && prediction_made == null }
+          Prediction time up
+        {/if}
+      </Card.Footer>
     </Card.Root>
   </div>  
 </div>

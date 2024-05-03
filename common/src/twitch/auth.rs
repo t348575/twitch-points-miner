@@ -1,7 +1,4 @@
-use color_eyre::{
-    eyre::{eyre, Context},
-    Result,
-};
+use eyre::{eyre, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::{CLIENT_ID, DEVICE_ID, USER_AGENT};
@@ -24,17 +21,14 @@ pub struct Token {
 }
 
 pub async fn login(tokens: &str) -> Result<()> {
-    let client = reqwest::Client::new();
-    let res = client.post("https://id.twitch.tv/oauth2/device")
-        .header("Client-Id", CLIENT_ID)
-        .header("User-Agent", USER_AGENT)
-        .header("X-Device-Id", DEVICE_ID)
-        .form(&std::collections::HashMap::from([
+    let flow: LoginFlowStart = ureq::post("https://id.twitch.tv/oauth2/device")
+        .set("Client-Id", CLIENT_ID)
+        .set("User-Agent", USER_AGENT)
+        .set("X-Device-Id", DEVICE_ID)
+        .send_form(&[
             ("client_id", CLIENT_ID),
             ("scopes", "channel_read chat:read user_blocks_edit user_blocks_read user_follows_edit user_read")
-        ])).send().await.unwrap();
-
-    let flow = res.json::<LoginFlowStart>().await.unwrap();
+        ])?.into_json()?;
 
     if !dialoguer::Confirm::new()
         .with_prompt(format!(
@@ -46,28 +40,22 @@ pub async fn login(tokens: &str) -> Result<()> {
         return Err(eyre!("User cancelled login"));
     }
 
-    let res = client
-        .post("https://id.twitch.tv/oauth2/token")
-        .header("Client-Id", CLIENT_ID)
-        .header("Host", "id.twitch.tv")
-        .header("Origin", "https://android.tv.twitch.tv")
-        .header("Refer", "https://android.tv.twitch.tv")
-        .header("User-Agent", USER_AGENT)
-        .header("X-Device-Id", DEVICE_ID)
-        .form(&std::collections::HashMap::from([
+    let res: Token = ureq::post("https://id.twitch.tv/oauth2/token")
+        .set("Client-Id", CLIENT_ID)
+        .set("Host", "id.twitch.tv")
+        .set("Origin", "https://android.tv.twitch.tv")
+        .set("Refer", "https://android.tv.twitch.tv")
+        .set("User-Agent", USER_AGENT)
+        .set("X-Device-Id", DEVICE_ID)
+        .send_form(&[
             ("client_id", CLIENT_ID),
             ("device_code", &flow.device_code),
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-        ]))
-        .send()
-        .await
-        .unwrap();
+        ])?
+        .into_json()?;
 
-    tokio::fs::write(
-        tokens,
-        serde_json::to_string(&res.json::<Token>().await.context("Parsing tokens")?)?,
-    )
-    .await
-    .context("Writing tokens file")?;
+    tokio::fs::write(tokens, serde_json::to_string(&res)?)
+        .await
+        .context("Writing tokens file")?;
     Ok(())
 }

@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose::URL_SAFE, Engine};
-use color_eyre::{eyre::eyre, Result};
-use serde::Serialize;
+use eyre::{eyre, Result};
+use serde::{Deserialize, Serialize};
 use twitch_api::types::UserId;
 
 use crate::{
@@ -11,17 +11,13 @@ use crate::{
 use super::{CHROME_USER_AGENT, CLIENT_ID};
 
 pub async fn get_spade_url(streamer: &str, base_url: &str) -> Result<String> {
-    let client = reqwest::Client::new();
-    let res = client
-        .get(format!("{base_url}/{streamer}"))
-        .header("User-Agent", CHROME_USER_AGENT)
-        .send()
-        .await?;
-
-    let page_text = res.text().await?;
+    // let client = reqwest::Client::new();
+    let page_text = ureq::get(&format!("{base_url}/{streamer}"))
+        .set("User-Agent", CHROME_USER_AGENT)
+        .call()?
+        .into_string()?;
 
     async fn inner(
-        client: &reqwest::Client,
         text: &str,
         uri: &str,
         #[cfg(feature = "testing")] base_url: &str,
@@ -33,12 +29,10 @@ pub async fn get_spade_url(streamer: &str, base_url: &str) -> Result<String> {
                     let prefix = format!("{base_url}/");
                     #[cfg(not(feature = "testing"))]
                     let prefix = "";
-                    let res = client
-                        .get(format!("{prefix}{uri}{pattern_js}.js"))
-                        .header("User-Agent", CHROME_USER_AGENT)
-                        .send()
-                        .await?;
-                    let text = res.text().await?;
+                    let text = ureq::get(&format!("{prefix}{uri}{pattern_js}.js"))
+                        .set("User-Agent", CHROME_USER_AGENT)
+                        .call()?
+                        .into_string()?;
                     match text.split_once(r#""spade_url":""#) {
                         Some((_, after)) => match after.split_once('"') {
                             Some((url, _)) => Ok(url.to_string()),
@@ -54,7 +48,6 @@ pub async fn get_spade_url(streamer: &str, base_url: &str) -> Result<String> {
     }
 
     match inner(
-        &client,
         &page_text,
         #[cfg(feature = "testing")]
         "config/settings.",
@@ -68,7 +61,6 @@ pub async fn get_spade_url(streamer: &str, base_url: &str) -> Result<String> {
         Ok(s) => Ok(s),
         Err(_) => {
             inner(
-                &client,
                 &page_text,
                 "https://assets.twitch.tv/config/settings.",
                 #[cfg(feature = "testing")]
@@ -79,6 +71,14 @@ pub async fn get_spade_url(streamer: &str, base_url: &str) -> Result<String> {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetViewership {
+    /// constant: "minute-watched"
+    pub event: String,
+    pub properties: MinuteWatched,
+}
+
 pub async fn set_viewership(
     user_name: String,
     user_id: u32,
@@ -87,35 +87,23 @@ pub async fn set_viewership(
     spade_url: &str,
     access_token: &str,
 ) -> Result<()> {
-    #[derive(Debug, Serialize)]
-    #[serde(rename_all = "camelCase")]
-    pub struct Root {
-        pub event: &'static str,
-        pub properties: MinuteWatched,
-    }
-
-    let watch_event = Root {
-        event: "minute-watched",
+    let watch_event = SetViewership {
+        event: "minute-watched".to_owned(),
         properties: MinuteWatched::from_streamer_info(user_name, user_id, channel_id, info),
     };
 
     let body = serde_json::to_string(&[watch_event])?;
 
-    let client = reqwest::Client::new();
-    let res = client
-        .post(spade_url)
-        .header("Client-Id", CLIENT_ID)
-        .header("User-Agent", CHROME_USER_AGENT)
-        .header("X-Device-Id", DEVICE_ID)
-        .header("Authorization", format!("OAuth {}", access_token))
-        .body(URL_SAFE.encode(body))
-        .send()
-        .await?;
+    let res = ureq::post(spade_url)
+        .set("Client-Id", CLIENT_ID)
+        .set("User-Agent", CHROME_USER_AGENT)
+        .set("X-Device-Id", DEVICE_ID)
+        .set("Authorization", &format!("OAuth {}", access_token))
+        .send_string(&URL_SAFE.encode(body))?;
 
-    if !res.status().is_success() {
+    if res.status() > 299 {
         return Err(eyre!("Failed to set viewership"));
     }
 
-    res.text().await?;
     Ok(())
 }

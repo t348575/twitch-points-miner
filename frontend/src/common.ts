@@ -4,7 +4,9 @@ import { writable } from "svelte/store";
 
 export const streamers = writable<Streamer[]>([]);
 
-const baseUrl = import.meta.env.DEV ? "http://localhost:3000/" : window.location.href;
+const baseUrl = import.meta.env.DEV
+  ? "http://localhost:3000/"
+  : window.location.href;
 const client = createClient<paths>({
   baseUrl,
 });
@@ -163,14 +165,14 @@ export async function delete_preset(name: string) {
   }
 }
 
-export async function get_app_state(): Promise<
-  components["schemas"]["PubSub"]
+export async function get_watching(): Promise<
+  components["schemas"]["StreamerState"][]
 > {
   const { data, error } = await client.GET("/api");
   if (error) {
     throw error;
   }
-  return data;
+  return data.watching;
 }
 
 export async function get_timeline(
@@ -239,7 +241,12 @@ export async function set_watch_priority(
   }
 }
 
-export async function get_logs(page: number, page_size: number): Promise<string> {
-  const res = await fetch(`${baseUrl}api/logs?page=${page}&per_page=${page_size}`);
-  return await res.text()
+export async function get_logs(
+  page: number,
+  page_size: number,
+): Promise<string> {
+  const res = await fetch(
+    `${baseUrl}api/logs?page=${page}&per_page=${page_size}`,
+  );
+  return await res.text();
 }

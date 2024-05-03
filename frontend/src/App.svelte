@@ -1,32 +1,42 @@
 <script lang="ts">
   import { ModeWatcher, toggleMode } from "mode-watcher";
   import { Sun, Moon } from "lucide-svelte";
-  import * as Tabs from "$lib/components/ui/tabs";
   import { Button } from "$lib/components/ui/button";
-  import Points from "./Points.svelte";
-  import Setup from "./Setup.svelte";
-  import Predictions from "./Predictions.svelte";
+  import Points from "./routes/Points.svelte";
+  import Setup from "./routes/Setup.svelte";
+  import Predictions from "./routes/Predictions.svelte";
   import { onMount } from "svelte";
   import { get_streamers, streamers } from "./common";
-  import Logs from "./Logs.svelte";
+  import Logs from "./routes/Logs.svelte";
+  import Router, { location } from "svelte-spa-router";
 
   onMount(async () => {
     streamers.set(await get_streamers());
   });
+
+  const routes = {
+    '/': Points,
+    '/predictions': Predictions,
+    '/setup': Setup,
+    '/logs': Logs
+  }
+
+  const tab_class = "data-[state=active]:bg-background data-[state=active]:text-foreground rounded-sm px-3 py-1.5 text-sm shadow-sm inline-flex items-center justify-center h-8";
 </script>
 
 <main class="container min-w-full min-h-full pt-4 font-sans">
   <ModeWatcher />
-  <Tabs.Root value="Points">
-    <Tabs.List>
-      <Tabs.Trigger value="Points">Points</Tabs.Trigger>
-      <Tabs.Trigger value="Predictions">Predictions</Tabs.Trigger>
-      <Tabs.Trigger value="Setup">Setup</Tabs.Trigger>
-      <Tabs.Trigger value="Logs">Logs</Tabs.Trigger>
-    </Tabs.List>
-    <div class="flex justify-between items-center">
-      <div></div>
-      <h1 class="text-4xl mb-4 inline">Twitch points miner</h1>
+  <div class="flex justify-center">
+    <div class="flex justify-start w-full">
+      <div class="bg-muted rounded-md p-1 h-10 inline-flex items-center text-muted-foreground">
+        <Button variant="ghost" class={tab_class} data-state={$location === '/' ? 'active' : 'inactive'} href="#/">Points</Button>
+        <Button variant="ghost" class={tab_class} data-state={$location === '/predictions' ? 'active' : 'inactive'} href="#/predictions">Predictions</Button>
+        <Button variant="ghost" class={tab_class} data-state={$location === '/setup' ? 'active' : 'inactive'} href="#/setup">Setup</Button>
+        <Button variant="ghost" class={tab_class} data-state={$location === '/logs' ? 'active' : 'inactive'} href="#/logs">Logs</Button>
+      </div>
+    </div>
+    <h1 class="text-4xl mb-4 w-full text-center">Twitch points miner</h1>
+    <div class="flex justify-end w-full">
       <Button
         on:click={toggleMode}
         variant="outline"
@@ -42,17 +52,6 @@
         <span class="sr-only">Toggle theme</span>
       </Button>
     </div>
-    <Tabs.Content value="Points">
-      <Points />
-    </Tabs.Content>
-    <Tabs.Content value="Predictions">
-      <Predictions />
-    </Tabs.Content>
-    <Tabs.Content value="Setup">
-      <Setup />
-    </Tabs.Content>
-    <Tabs.Content value="Logs">
-      <Logs />
-    </Tabs.Content>
-  </Tabs.Root>
+  </div>
+  <Router {routes}/>
 </main>

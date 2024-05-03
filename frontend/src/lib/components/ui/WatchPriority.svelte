@@ -9,7 +9,7 @@
     set_watch_priority,
     streamers,
     type Streamer,
-  } from "./common";
+  } from "../../../common";
   import { Menu } from "lucide-svelte";
   import { Toaster, toast } from "svelte-sonner";
   import type { Selected } from "bits-ui";

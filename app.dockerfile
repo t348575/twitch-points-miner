@@ -24,7 +24,7 @@ COPY ["Cargo.toml", "Cargo.lock", "."]
 RUN perl -0777 -i -pe 's/members = \[[^\]]+\]/members = ["app", "common"]/igs' Cargo.toml
 RUN RUSTFLAGS="$RUSTFLAGS" cargo build --release --target x86_64-unknown-linux-musl
 
-FROM busybox AS runtime
+FROM scratch AS runtime
 COPY --from=frontend /dist /dist
 WORKDIR /
 ENV LOG=info

@@ -2,6 +2,7 @@
   import * as Table from "$lib/components/ui/table";
   import * as Select from "$lib/components/ui/select";
   import * as Menubar from "$lib/components/ui/menubar";
+  import * as Card from "$lib/components/ui/card";
   import * as Dialog from "$lib/components/ui/dialog";
   import * as AlertDialog from "$lib/components/ui/alert-dialog";
   import { Input } from "$lib/components/ui/input";
@@ -28,11 +29,12 @@
     get_presets,
     add_or_update_preset,
     delete_preset,
-  } from "./common";
+    get_watching,
+  } from "../common";
   import { ArrowUpDown, SlidersHorizontal, X } from "lucide-svelte";
-  import Config from "./Config.svelte";
-  import type { components } from "./api";
-  import WatchPriority from "./WatchPriority.svelte";
+  import Config from "../lib/components/ui/Config.svelte";
+  import type { components } from "../api";
+  import WatchPriority from "../lib/components/ui/WatchPriority.svelte";
   import { ScrollArea } from "$lib/components/ui/scroll-area";
 
   let data = writable<Streamer[]>([]);
@@ -40,6 +42,7 @@
   let selected_row = writable<string>("");
   let selected_row_id: string = "";
   selected_row.subscribe((s) => (selected_row_id = s));
+  let watching: components["schemas"]["StreamerState"][] = [];
 
   const table = createTable(data, {
     sort: addSortBy(),
@@ -72,6 +75,7 @@
 
   onMount(async () => {
     data.set(await get_streamers());
+    watching = (await get_watching()).slice(0, 2);
   });
 
   const { headerRows, pageRows, tableAttrs, tableBodyAttrs, pluginStates } =
@@ -335,60 +339,75 @@
       </Menubar.Menu>
     </Menubar.Root>
   </div>
-  <div class="rounded-md border sm:w-3/4 md:w-1/2">
-    <Table.Root {...$tableAttrs}>
-      <Table.Header>
-        {#each $headerRows as headerRow}
-          <Subscribe rowAttrs={headerRow.attrs()}>
-            <Table.Row>
-              {#each headerRow.cells as cell (cell.id)}
-                <Subscribe
-                  attrs={cell.attrs()}
-                  let:attrs
-                  props={cell.props()}
-                  let:props
-                >
-                  <Table.Head {...attrs} class="[&:has([role=checkbox])]:pl-3">
-                    {#if cell.id === "Points"}
-                      <Button variant="ghost" on:click={props.sort.toggle}>
+  <div class="flex w-full justify-center">
+    <div class="mr-2">
+      <Card.Root>
+        <Card.Header>
+          <Card.Title>Currently watching</Card.Title>
+        </Card.Header>
+        <Card.Content>
+          {#each watching as w}
+            <a href={`https://twitch.tv/${w.info.channelName}`} target="_blank">{w.info.channelName}</a>
+            <br />
+          {/each}
+        </Card.Content>
+      </Card.Root>
+    </div>
+    <div class="rounded-md border sm:w-3/4 md:w-1/2">
+      <Table.Root {...$tableAttrs}>
+        <Table.Header>
+          {#each $headerRows as headerRow}
+            <Subscribe rowAttrs={headerRow.attrs()}>
+              <Table.Row>
+                {#each headerRow.cells as cell (cell.id)}
+                  <Subscribe
+                    attrs={cell.attrs()}
+                    let:attrs
+                    props={cell.props()}
+                    let:props
+                  >
+                    <Table.Head {...attrs} class="[&:has([role=checkbox])]:pl-3">
+                      {#if cell.id === "Points"}
+                        <Button variant="ghost" on:click={props.sort.toggle}>
+                          <Render of={cell.render()} />
+                          <ArrowUpDown class={"ml-2 h-4 w-4"} />
+                        </Button>
+                      {:else}
                         <Render of={cell.render()} />
-                        <ArrowUpDown class={"ml-2 h-4 w-4"} />
-                      </Button>
-                    {:else}
-                      <Render of={cell.render()} />
-                    {/if}
-                  </Table.Head>
-                </Subscribe>
-              {/each}
-            </Table.Row>
-          </Subscribe>
-        {/each}
-      </Table.Header>
-      <Table.Body {...$tableBodyAttrs}>
-        {#each $pageRows as row (row.id)}
-          <Subscribe rowAttrs={row.attrs()} let:rowAttrs>
-            <Table.Row
-              {...rowAttrs}
-              data-state={$selectedDataIds[row.id] && "selected"}
-            >
-              {#each row.cells as cell (cell.id)}
-                <Subscribe attrs={cell.attrs()} let:attrs>
-                  <Table.Cell {...attrs}>
-                    {#if cell.id == "Config"}
-                      <Button variant="ghost">
-                        <SlidersHorizontal />
-                      </Button>
-                    {:else}
-                      <Render of={cell.render()} />
-                    {/if}
-                  </Table.Cell>
-                </Subscribe>
-              {/each}
-            </Table.Row>
-          </Subscribe>
-        {/each}
-      </Table.Body>
-    </Table.Root>
+                      {/if}
+                    </Table.Head>
+                  </Subscribe>
+                {/each}
+              </Table.Row>
+            </Subscribe>
+          {/each}
+        </Table.Header>
+        <Table.Body {...$tableBodyAttrs}>
+          {#each $pageRows as row (row.id)}
+            <Subscribe rowAttrs={row.attrs()} let:rowAttrs>
+              <Table.Row
+                {...rowAttrs}
+                data-state={$selectedDataIds[row.id] && "selected"}
+              >
+                {#each row.cells as cell (cell.id)}
+                  <Subscribe attrs={cell.attrs()} let:attrs>
+                    <Table.Cell {...attrs}>
+                      {#if cell.id == "Config"}
+                        <Button variant="ghost">
+                          <SlidersHorizontal />
+                        </Button>
+                      {:else}
+                        <Render of={cell.render()} />
+                      {/if}
+                    </Table.Cell>
+                  </Subscribe>
+                {/each}
+              </Table.Row>
+            </Subscribe>
+          {/each}
+        </Table.Body>
+      </Table.Root>
+    </div>
   </div>
 
   <Dialog.Root bind:open={config_dialog}>

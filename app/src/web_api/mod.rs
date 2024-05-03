@@ -1,4 +1,4 @@
-use std::{io::SeekFrom, path::Path, sync::Arc};
+use std::{io::SeekFrom, sync::Arc};
 
 use axum::{
     extract::{Query, State},
@@ -8,12 +8,12 @@ use axum::{
     serve::Serve,
     Json, Router,
 };
-use color_eyre::eyre::{Context, Report, Result};
 use common::{
     config::{filters::Filter, strategy::*, PredictionConfig, StreamerConfig},
     twitch::auth::Token,
     types::*,
 };
+use eyre::{Context, Report, Result};
 use serde::Deserialize;
 use tokio::{
     fs::File,
@@ -31,7 +31,10 @@ use utoipa::{
 };
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::pubsub::PubSub;
+use crate::{
+    analytics::{Analytics, AnalyticsWrapper},
+    pubsub::PubSub,
+};
 
 mod analytics;
 mod config;
@@ -73,7 +76,9 @@ pub async fn get_api_server(
     address: String,
     pubsub: ApiState,
     token: Arc<Token>,
-) -> Serve<Router, Router> {
+    analytics_db: &str,
+    log_path: Option<String>,
+) -> Result<Serve<Router, Router>> {
     #[derive(OpenApi)]
     #[openapi(
         paths(
@@ -98,11 +103,14 @@ pub async fn get_api_server(
     let mut paths = Vec::new();
     let mut schemas = Vec::new();
 
+    let (analytics, tx) = Analytics::new(analytics_db)?;
+    let analytics = Arc::new(AnalyticsWrapper::new(analytics));
+
     let streamer = streamer::build(pubsub.clone(), token.clone());
     schemas.extend(streamer.1);
     paths.extend(streamer.2);
 
-    let predictions = predictions::build(pubsub.clone(), token.clone());
+    let predictions = predictions::build(pubsub.clone(), analytics.clone(), tx);
     schemas.extend(predictions.1);
     paths.extend(predictions.2);
 
@@ -111,7 +119,7 @@ pub async fn get_api_server(
     paths.extend(config.2);
 
     let analytics = {
-        let analytics = analytics::build(pubsub.clone(), token.clone());
+        let analytics = analytics::build(analytics);
         schemas.extend(analytics.1);
         paths.extend(analytics.2);
         analytics.0
@@ -130,7 +138,7 @@ pub async fn get_api_server(
         .nest("/predictions", predictions.0)
         .nest("/config", config.0)
         .nest("/analytics", analytics)
-        .route("/logs", get(get_logs))
+        .route("/logs", get(get_logs).with_state(log_path))
         .route("/", get(app_state).with_state(pubsub.clone()));
 
     let router = Router::new()
@@ -141,7 +149,7 @@ pub async fn get_api_server(
         .layer(TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(address).await.unwrap();
-    axum::serve(listener, router)
+    Ok(axum::serve(listener, router))
 }
 
 #[utoipa::path(
@@ -185,6 +193,12 @@ impl From<chrono::ParseError> for ApiError {
 impl From<crate::analytics::AnalyticsError> for ApiError {
     fn from(value: crate::analytics::AnalyticsError) -> Self {
         ApiError::AnalyticsError(value)
+    }
+}
+
+impl From<Report> for ApiError {
+    fn from(value: Report) -> Self {
+        ApiError::InternalError(value.to_string())
     }
 }
 
@@ -246,14 +260,14 @@ async fn read_sliced_lines(file: &mut File, log_query: LogQuery) -> Result<Vec<S
         let mut temp_buffer = buffer[0..bytes_read].to_vec();
         temp_buffer.append(&mut prev_buffer);
         prev_buffer = temp_buffer;
-        if !buffer[0..bytes_read].contains(&('\n' as u8)) {
-            file.seek(SeekFrom::Current((-1 * bytes_read as i64) - 1))
+        if !buffer[0..bytes_read].contains(&(b'\n')) {
+            file.seek(SeekFrom::Current(-(bytes_read as i64) - 1))
                 .await?;
             continue;
         }
 
         let raw_lines = prev_buffer
-            .split(|x| *x == '\n' as u8)
+            .split(|x| *x == b'\n')
             .map(|x| x.to_vec())
             .rev()
             .collect::<Vec<_>>();
@@ -281,7 +295,7 @@ async fn read_sliced_lines(file: &mut File, log_query: LogQuery) -> Result<Vec<S
                 current_page = total_lines / log_query.per_page;
             }
         }
-        file.seek(SeekFrom::Current((-1 * bytes_read as i64) - 1))
+        file.seek(SeekFrom::Current(-(bytes_read as i64) - 1))
             .await?;
 
         if file.stream_position().await? == 0 {
@@ -308,16 +322,19 @@ struct LogQuery {
     ),
     params(LogQuery)
 )]
-async fn get_logs(Query(log_query): Query<LogQuery>) -> Result<Html<String>, ApiError> {
-    if !Path::new("twitch-points-miner.log").exists() {
+async fn get_logs(
+    State(log_path): State<Option<String>>,
+    Query(log_query): Query<LogQuery>,
+) -> Result<Html<String>, ApiError> {
+    if log_path.is_none() {
         return Ok(Html(
-            "Logging to file not enabled, use the --log-to-file flag!".to_string(),
+            "Logging to file not enabled, use the --log-file flag!".to_string(),
         ));
     }
 
     let mut file = tokio::fs::OpenOptions::new()
         .read(true)
-        .open("twitch-points-miner.log")
+        .open(log_path.unwrap())
         .await
         .context("Opening log file")
         .map_err(ApiError::internal_error)?;

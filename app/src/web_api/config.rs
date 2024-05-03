@@ -11,7 +11,6 @@ use serde::Deserialize;
 use thiserror::Error;
 use twitch_api::types::UserId;
 use utoipa::ToSchema;
-use validator::Validate;
 
 use crate::{make_paths, pubsub::PubSub, sub_error};
 
@@ -256,7 +255,6 @@ async fn update_streamer_config(
     *writer.config.streamers.get_mut(&channel_name).unwrap() = payload;
 
     writer.save_config("Update streamer config").await?;
-    writer.restart_live_watcher();
 
     Ok(())
 }
