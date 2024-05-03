@@ -4,7 +4,7 @@
   import { get_logs } from "./common";
   import { ScrollArea } from "$lib/components/ui/scroll-area";
   import { Button } from "$lib/components/ui/button";
-  import { ChevronLeft, ChevronRight } from "lucide-svelte";
+  import { ChevronLeft, ChevronRight, RefreshCcw } from "lucide-svelte";
   import { Input } from "$lib/components/ui/input";
 
   let text = "";
@@ -23,14 +23,15 @@
   <Card.Root>
     <Card.Content class="max-h-[80vh]">
       <ScrollArea orientation="both">
-        <pre class="max-h-[80vh]">
-  {@html text}
+        <pre class="max-h-[80vh] pl-1 pr-3">
+{@html text}
         </pre>
       </ScrollArea>
     </Card.Content>
   </Card.Root>
 
   <div class="flex gap-1 self-center content-center mt-1">
+    <Button variant="outline" on:click={render_logs}><RefreshCcw /></Button>
     <Input
       type="number"
       min="1"

@@ -4,26 +4,35 @@ use axum::{
     extract::{Path, State},
     response::IntoResponse,
     routing::{get, post},
-    Extension, Json, Router,
+    Json, Router,
 };
-use common::twitch::{auth::Token, gql};
+use common::twitch::gql;
+use eyre::{eyre, Context, ContextCompat};
+use flume::Sender;
 use http::StatusCode;
 use serde::Deserialize;
 use thiserror::Error;
+use tokio::sync::RwLockWriteGuard;
 use tracing::info;
 use utoipa::ToSchema;
 
-use crate::analytics::{model::*, TimelineResult};
+use crate::{
+    analytics::{self, model::*, Analytics, AnalyticsError, AnalyticsWrapper, TimelineResult},
+    pubsub::PubSub,
+};
 use crate::{make_paths, pubsub::prediction_logic, sub_error};
 
 use super::{ApiError, ApiState, RouterBuild, WebApiError};
 
-pub fn build(state: ApiState, token: Arc<Token>) -> RouterBuild {
+pub fn build(
+    state: ApiState,
+    analytics: Arc<AnalyticsWrapper>,
+    tx: Sender<analytics::Request>,
+) -> RouterBuild {
     let routes = Router::new()
         .route("/live", get(get_live_prediction))
         .route("/bet/:streamer", post(make_prediction))
-        .layer(Extension(token))
-        .with_state(state);
+        .with_state((state, analytics, tx));
 
     #[allow(unused_mut)]
     let mut schemas = vec![MakePrediction::schema()];
@@ -88,32 +97,47 @@ struct MakePrediction {
     request_body = MakePrediction
 )]
 async fn make_prediction(
-    State(data): State<ApiState>,
+    State((data, _analytics, tx)): State<(
+        ApiState,
+        Arc<AnalyticsWrapper>,
+        Sender<analytics::Request>,
+    )>,
     Path(streamer): Path<String>,
     Json(payload): Json<MakePrediction>,
 ) -> Result<StatusCode, ApiError> {
-    let mut data = data.write().await;
-    let simulate = data.simulate;
+    let mut state = data.write().await;
+    let simulate = state.simulate;
 
-    let gql = data.gql.clone();
-    let s = data.get_by_name(&streamer);
+    let gql = state.gql.clone();
+    let s = state.get_by_name(&streamer);
     if s.is_none() {
         return Err(ApiError::StreamerDoesNotExist);
     }
 
-    let analytics = data.analytics.clone();
-    let s_id = data.get_id_by_name(&streamer).unwrap().to_owned();
-    let s = data.get_by_name_mut(&streamer).unwrap();
+    let s_id = state.get_id_by_name(&streamer).unwrap().to_owned();
+    let s = state.get_by_name_mut(&streamer).unwrap().clone();
 
     let prediction = s.predictions.get(&payload.event_id);
     if prediction.is_none() {
         return sub_error!(PredictionError::PredictionNotFound);
     }
 
-    let (event, _) = prediction.unwrap();
+    let (event, _) = prediction.unwrap().clone();
     if !event.outcomes.iter().any(|o| o.id == payload.outcome_id) {
         return sub_error!(PredictionError::OutcomeNotFound);
     }
+    drop(state);
+
+    let update_placed_state = |mut state: RwLockWriteGuard<PubSub>| {
+        state
+            .get_by_name_mut(&streamer)
+            .context("Streamer not found")
+            .unwrap()
+            .predictions
+            .get_mut(&payload.event_id)
+            .unwrap()
+            .1 = true;
+    };
 
     if payload.points.is_some() && *payload.points.as_ref().unwrap() > 0 {
         place_bet(
@@ -121,27 +145,29 @@ async fn make_prediction(
             payload.outcome_id,
             *payload.points.as_ref().unwrap(),
             simulate,
-            &s.info.channel_name,
+            &streamer,
             &gql,
-            (analytics, &s_id, &streamer),
+            &s_id,
+            tx,
         )
         .await?;
-        s.predictions.get_mut(&payload.event_id).unwrap().1 = true;
+        update_placed_state(data.write().await);
         Ok(StatusCode::CREATED)
     } else {
-        match prediction_logic(s, &payload.event_id) {
+        match prediction_logic(&s, &payload.event_id) {
             Ok(Some((o, p))) => {
                 place_bet(
                     payload.event_id.clone(),
                     o,
                     p,
                     simulate,
-                    &s.info.channel_name,
+                    &streamer,
                     &gql,
-                    (analytics, &s_id, &streamer),
+                    &s_id,
+                    tx,
                 )
                 .await?;
-                s.predictions.get_mut(&payload.event_id).unwrap().1 = true;
+                update_placed_state(data.write().await);
                 Ok(StatusCode::CREATED)
             }
             Ok(None) => Ok(StatusCode::ACCEPTED),
@@ -157,28 +183,28 @@ async fn place_bet(
     simulate: bool,
     streamer_name: &str,
     gql: &gql::Client,
-    analytics: (Arc<crate::analytics::AnalyticsWrapper>, &str, &str),
+    streamer_id: &str,
+    tx: Sender<analytics::Request>,
 ) -> Result<(), ApiError> {
     info!(
         "{}: predicting {}, with points {}",
         streamer_name, event_id, points
     );
+
     gql.make_prediction(points, &event_id, &outcome_id, simulate)
         .await
         .map_err(ApiError::twitch_api_error)?;
 
-    let channel_id = analytics
-        .1
+    let channel_id = streamer_id
         .parse::<i32>()
-        .map_err(|err| err.into())
-        .map_err(ApiError::internal_error)?;
+        .context("Could not parse streamer ID")?;
     let channel_points = gql
-        .get_channel_points(&[analytics.2])
+        .get_channel_points(&[streamer_name])
         .await
         .map_err(ApiError::twitch_api_error)?;
-    analytics
-        .0
-        .execute(|analytics| {
+
+    tx.send_async(Box::new(
+        move |analytics: &mut Analytics| -> Result<(), AnalyticsError> {
             let entry_id = analytics.last_prediction_id(channel_id, &event_id)?;
             analytics.insert_points(
                 channel_id,
@@ -186,8 +212,10 @@ async fn place_bet(
                 PointsInfo::Prediction(event_id.clone(), entry_id),
             )?;
             analytics.place_bet(&event_id, channel_id, &outcome_id, points)
-        })
-        .await?;
+        },
+    ))
+    .await
+    .map_err(|_| eyre!("Could not send analytics request"))?;
     Ok(())
 }
 
@@ -207,11 +235,10 @@ struct GetPredictionQuery {
 )]
 async fn get_live_prediction(
     axum::extract::Query(query): axum::extract::Query<GetPredictionQuery>,
-    State(data): State<ApiState>,
+    State(state): State<(ApiState, Arc<AnalyticsWrapper>, Sender<analytics::Request>)>,
 ) -> Result<Json<Option<Prediction>>, ApiError> {
-    let writer = data.write().await;
-    let res = writer
-        .analytics
+    let res = state
+        .1
         .execute(|analytics| analytics.get_live_prediction(query.channel_id, &query.prediction_id))
         .await?;
     Ok(Json(res))

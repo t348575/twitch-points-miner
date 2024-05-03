@@ -32,7 +32,11 @@ use twitch_api::{
     types::UserId,
 };
 
-use crate::analytics::model::{PointsInfo, Prediction};
+use crate::analytics::{
+    self,
+    model::{PointsInfo, Prediction, PredictionBetWrapper},
+    AnalyticsWrapper,
+};
 
 #[derive(Debug, Serialize, Clone, utoipa::ToSchema)]
 pub struct PubSub {
@@ -56,9 +60,10 @@ pub struct PubSub {
     #[serde(skip)]
     pub ws_tx: Sender<Request>,
     #[serde(skip)]
-    pub analytics: Arc<crate::analytics::AnalyticsWrapper>,
+    pub analytics: Arc<AnalyticsWrapper>,
     #[serde(skip)]
-    pub log_path: Option<String>,
+    pub analytics_tx: Sender<analytics::Request>,
+    pub watching: Vec<StreamerState>,
 }
 
 impl PubSub {
@@ -76,7 +81,7 @@ impl PubSub {
         base_url: &str,
         ws_tx: Sender<Request>,
         analytics: Arc<crate::analytics::AnalyticsWrapper>,
-        log_path: Option<String>,
+        analytics_tx: Sender<crate::analytics::Request>
     ) -> Result<PubSub> {
         let mut configs = channels
             .iter()
@@ -139,16 +144,21 @@ impl PubSub {
             configs,
             ws_tx,
             analytics,
+            analytics_tx,
             gql,
             base_url: base_url.to_string(),
-            log_path,
+            watching: Vec::new(),
         })
     }
 
     #[cfg(test)]
     pub fn empty(ws_tx: Sender<Request>) -> Self {
+        use crate::analytics::Analytics;
+
+        let (analytics, tx) = Analytics::new(":memory:").unwrap();
         Self {
-            analytics: Arc::new(crate::analytics::AnalyticsWrapper::empty()),
+            analytics: Arc::new(AnalyticsWrapper::new(analytics)),
+            analytics_tx: tx,
             config: Default::default(),
             config_path: Default::default(),
             streamers: Default::default(),
@@ -161,7 +171,7 @@ impl PubSub {
             gql: Default::default(),
             base_url: Default::default(),
             ws_tx,
-            log_path: Default::default(),
+            watching: Default::default(),
         }
     }
 
@@ -190,13 +200,19 @@ impl PubSub {
         ws_rx: Receiver<TopicData>,
         pubsub: Arc<RwLock<PubSub>>,
         gql: gql::Client,
+        analytics_tx: Sender<analytics::Request>,
     ) -> Result<()> {
         let (tx_watch_streams, rx_watch_streams) = unbounded();
 
-        spawn(watch_streams(pubsub.clone(), rx_watch_streams));
-        spawn(update_and_claim_points(pubsub.clone(), gql.clone()));
-        spawn(update_spade_url(pubsub.clone()));
+        spawn(watch_stream::run(pubsub.clone(), rx_watch_streams));
+        spawn(update_and_claim_points::run(
+            pubsub.clone(),
+            gql.clone(),
+            analytics_tx,
+        ));
+        spawn(update_spade_url::run(pubsub.clone()));
 
+        let mut deferred_updates = Vec::new();
         while let Ok(data) = ws_rx.recv_async().await {
             if let TopicData::VideoPlaybackById { topic, reply } = &data {
                 if let VideoPlaybackReply::StreamUp {
@@ -209,16 +225,33 @@ impl PubSub {
                         .await;
                 }
             }
-            let res = pubsub.write().await.handle_response(data).await;
 
-            if let Err(e) = res {
-                warn!("Error handling response: {}", e);
+            match pubsub.write().await.handle_response(data).await {
+                Ok(Some(channel_id)) => deferred_updates.push((channel_id, Instant::now())),
+                Ok(None) => {}
+                Err(err) => warn!("Error handling response: {err:?}"),
+            }
+
+            for (channel_id, time) in deferred_updates.drain(..).collect::<Vec<_>>() {
+                if time.elapsed() > Duration::from_secs(30) {
+                    if let Err(err) = pubsub
+                        .write()
+                        .await
+                        .update_stream_metadata(channel_id)
+                        .await
+                    {
+                        warn!("Error updating stream metadata: {err:?}");
+                    }
+                } else {
+                    deferred_updates.push((channel_id, time))
+                }
             }
         }
         Ok(())
     }
 
-    async fn handle_response(&mut self, data: TopicData) -> Result<()> {
+    // #[tracing::instrument]
+    async fn handle_response(&mut self, data: TopicData) -> Result<Option<u32>> {
         match data {
             TopicData::VideoPlaybackById { topic, reply } => {
                 debug!("Got VideoPlaybackById {:#?}", topic);
@@ -238,12 +271,16 @@ impl PubSub {
                         play_delay: _,
                     } => {
                         info!("{} is live", streamer.info.channel_name);
+                        streamer.info.live = true;
+
                         for item in topics.into_iter().map(Request::Listen) {
                             self.ws_tx
                                 .send_async(item)
                                 .await
                                 .context("Send ws command")?;
                         }
+
+                        return Ok(Some(channel_id));
                     }
                     VideoPlaybackReply::StreamDown { server_time: _ } => {
                         streamer.info.live = false;
@@ -283,7 +320,7 @@ impl PubSub {
                 } = *reply
                 {
                     if claim.user_id.as_str().ne(&self.user_id) {
-                        return Ok(());
+                        return Ok(None);
                     };
 
                     if self.streamers.contains_key(&claim.channel_id) {
@@ -311,9 +348,24 @@ impl PubSub {
             }
             _ => {}
         }
+        Ok(None)
+    }
+
+    // #[tracing::instrument]
+    async fn update_stream_metadata(&mut self, channel_id: u32) -> Result<()> {
+        let streamer = self
+            .streamers
+            .get_mut(&UserId::from_str(&channel_id.to_string()).unwrap())
+            .context("Streamer does not exist")?;
+        let metadata = self
+            .gql
+            .streamer_metadata(&[streamer.info.channel_name.as_str()])
+            .await?;
+        streamer.info = metadata[0].clone().unwrap().1;
         Ok(())
     }
 
+    // #[tracing::instrument]
     async fn upsert_prediction(&mut self, streamer: &UserId, event: &Event) -> Result<()> {
         let channel_id = streamer.as_str().parse()?;
         let created_at = chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(
@@ -329,24 +381,28 @@ impl PubSub {
             None
         };
 
-        self.analytics
-            .execute(|analytics| {
-                analytics.upsert_prediction(&Prediction {
-                    channel_id,
-                    prediction_id: event.id.clone(),
-                    title: event.title.clone(),
-                    prediction_window: event.prediction_window_seconds,
-                    outcomes: event.outcomes.clone().into(),
-                    winning_outcome_id: None,
-                    placed_bet: crate::analytics::model::PredictionBetWrapper::None,
-                    created_at,
-                    closed_at,
-                })
-            })
-            .await?;
+        let prediction = Prediction {
+            channel_id,
+            prediction_id: event.id.clone(),
+            title: event.title.clone(),
+            prediction_window: event.prediction_window_seconds,
+            outcomes: event.outcomes.clone().into(),
+            winning_outcome_id: None,
+            placed_bet: PredictionBetWrapper::None,
+            created_at,
+            closed_at,
+        };
+
+        self.analytics_tx
+            .send_async(Box::new(move |analytics| {
+                analytics.upsert_prediction(&prediction)
+            }))
+            .await
+            .map_err(|_| eyre!("Failed to send prediction"))?;
         Ok(())
     }
 
+    // #[tracing::instrument]
     async fn handle_prediction_event(&mut self, event: Event, streamer: UserId) -> Result<()> {
         if event.locked_at.is_some() && event.ended_at.is_none() {
             debug!("Event {} locked, but not yet ended", event.id);
@@ -389,12 +445,14 @@ impl PubSub {
                 .await?[0]
                 .0;
             let closed_at = chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(
-                event.ended_at.unwrap().as_str(),
+                event.ended_at.as_ref().unwrap().as_str(),
             )?
             .naive_local();
 
-            self.analytics
-                .execute(|analytics| {
+            let event_c = event.clone();
+            self.analytics_tx
+                .send_async(Box::new(move |analytics| {
+                    let event = &event_c;
                     let entry_id = analytics.last_prediction_id(channel_id, &event.id)?;
                     analytics.insert_points(
                         channel_id,
@@ -404,12 +462,13 @@ impl PubSub {
                     analytics.end_prediction(
                         &event.id,
                         channel_id,
-                        event.winning_outcome_id,
-                        event.outcomes.into(),
+                        event.winning_outcome_id.clone(),
+                        event.outcomes.clone().into(),
                         closed_at,
                     )
-                })
-                .await?;
+                }))
+                .await
+                .map_err(|_| eyre!("Failed to send prediction to analytics"))?;
 
             self.streamers
                 .get_mut(&streamer)
@@ -422,7 +481,7 @@ impl PubSub {
                 .contains_key(event.id.as_str())
         {
             let event_id = event.id.clone();
-            info!("Prediction {} updated", event.id);
+            debug!("Prediction {} updated", event.id);
 
             self.upsert_prediction(&streamer, &event).await?;
             if let Some((e, _)) = self
@@ -439,6 +498,7 @@ impl PubSub {
         Ok(())
     }
 
+    // #[tracing::instrument]
     async fn try_prediction(&mut self, streamer: &UserId, event_id: &str) -> Result<()> {
         let s = self.streamers.get(streamer).unwrap().clone();
 
@@ -475,18 +535,21 @@ impl PubSub {
                 .gql
                 .get_channel_points(&[s.info.channel_name.as_str()])
                 .await?;
-            self.analytics
-                .execute(|analytics| {
-                    let entry_id = analytics.last_prediction_id(channel_id, event_id)?;
+
+            let event_id = event_id.to_owned();
+            self.analytics_tx
+                .send_async(Box::new(move |analytics| {
+                    let entry_id = analytics.last_prediction_id(channel_id, &event_id)?;
                     analytics.insert_points(
                         channel_id,
                         points[0].0 as i32,
                         PointsInfo::Prediction(event_id.to_owned(), entry_id),
                     )?;
 
-                    analytics.place_bet(event_id, channel_id, &outcome_id, points_to_bet)
-                })
-                .await?;
+                    analytics.place_bet(&event_id, channel_id, &outcome_id, points_to_bet)
+                }))
+                .await
+                .map_err(|_| eyre!("Failed to send prediction to analytics"))?;
         }
         Ok(())
     }
@@ -579,6 +642,7 @@ pub fn prediction_logic(streamer: &StreamerState, event_id: &str) -> Result<Opti
 mod watch_stream {
     use super::*;
 
+    // #[tracing::instrument]
     pub async fn inner(
         pubsub: &Arc<RwLock<PubSub>>,
         watch_streak: &mut Vec<(UserId, i32)>,
@@ -655,6 +719,9 @@ mod watch_stream {
         }
 
         watch_items = remove_duplicates_in_place(watch_items, |a, b| a.0.eq(&b.0));
+        {
+            pubsub.write().await.watching = watch_items.iter().map(|x| x.1.clone()).collect();
+        }
         for (id, streamer) in watch_items.into_iter().take(2) {
             debug!("Watching {}", streamer.info.channel_name);
             api::set_viewership(
@@ -675,35 +742,41 @@ mod watch_stream {
         *watch_streak = watch_streak.drain(..).filter(|x| x.1 < 31).collect();
         Ok(())
     }
-}
 
-async fn watch_streams(pubsub: Arc<RwLock<PubSub>>, live_event: Receiver<UserId>) {
-    let use_watch_streak = {
-        let reader = pubsub.read().await;
-        reader.config.watch_streak.unwrap_or(true)
-    };
+    pub async fn run(pubsub: Arc<RwLock<PubSub>>, live_event: Receiver<UserId>) {
+        let use_watch_streak = {
+            let reader = pubsub.read().await;
+            reader.config.watch_streak.unwrap_or(true)
+        };
 
-    let mut watch_streak = Vec::new();
+        let mut watch_streak = Vec::new();
 
-    loop {
-        if let Err(err) =
-            watch_stream::inner(&pubsub, &mut watch_streak, use_watch_streak, &live_event).await
-        {
-            if err.to_string() != "Spade URL not set" {
-                error!("watch_streams {err}");
+        loop {
+            if let Err(err) = inner(&pubsub, &mut watch_streak, use_watch_streak, &live_event).await
+            {
+                if err.to_string() != "Spade URL not set" {
+                    error!("watch_streams {err}");
+                }
             }
-        }
 
-        #[cfg(test)]
-        let time = 1;
-        #[cfg(not(test))]
-        let time = 10 * 1000;
-        sleep(Duration::from_millis(time)).await;
+            #[cfg(test)]
+            let time = 1;
+            #[cfg(not(test))]
+            let time = 10 * 1000;
+            sleep(Duration::from_millis(time)).await;
+        }
     }
 }
 
-async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>, gql: gql::Client) {
-    async fn inner(pubsub: &Arc<RwLock<PubSub>>, gql: &gql::Client) -> Result<()> {
+mod update_and_claim_points {
+    use super::*;
+
+    // #[tracing::instrument]
+    async fn inner(
+        pubsub: &Arc<RwLock<PubSub>>,
+        gql: &gql::Client,
+        tx: &Sender<analytics::Request>,
+    ) -> Result<()> {
         let streamer = {
             let reader = pubsub.read().await;
             reader
@@ -728,53 +801,73 @@ async fn update_and_claim_points(pubsub: Arc<RwLock<PubSub>>, gql: gql::Client) 
             .get_channel_points(&channel_names)
             .await
             .context("Get channel points")?;
-        {
-            let mut points_value;
-            let mut points_info = PointsInfo::Watching;
 
-            let mut writer = pubsub.write().await;
-            for (idx, (id, _)) in streamer.iter().enumerate() {
-                points_value = points[idx].0;
-                if let Some(s) = writer.streamers.get_mut(id) {
-                    s.points = points[idx].0;
-                    s.last_points_refresh = Instant::now();
-                    if let Some(claim_id) = &points[idx].1 {
-                        info!("Claiming community points bonus {}", s.info.channel_name);
-                        let claimed_points = gql.claim_points(id.as_str(), claim_id).await?;
-                        points_value = s.points;
-                        points_info = PointsInfo::CommunityPointsClaimed;
-                        s.points = claimed_points;
-                        s.last_points_refresh = Instant::now();
-                    }
+        let mut changes = Vec::new();
+        for ((points, claim), (channel_id, state)) in points.into_iter().zip(streamer) {
+            match claim {
+                Some(claim_id) => {
+                    info!(
+                        "Claiming community points bonus {}",
+                        state.info.channel_name
+                    );
+                    let claimed_points = gql.claim_points(channel_id.as_str(), &claim_id).await?;
+                    changes.push((
+                        PointsInfo::CommunityPointsClaimed,
+                        claimed_points,
+                        channel_id,
+                    ));
                 }
+                None => changes.push((PointsInfo::Watching, points, channel_id)),
+            }
+        }
 
-                let channel_id = id.as_str().parse::<i32>()?;
-                writer
-                    .analytics
-                    .execute(|analytics| {
-                        analytics.insert_points_if_updated(
-                            channel_id,
-                            points_value as i32,
-                            points_info.clone(),
-                        )
-                    })
-                    .await?;
+        {
+            let now = Instant::now();
+            // let mut writer = pubsub.write().await;
+            for (_type, points, channel_id) in changes {
+                let p = pubsub.clone();
+                tx.send_async(Box::new(move |analytics| {
+                    let edited = analytics.insert_points_if_updated(
+                        channel_id.as_str().parse().unwrap(),
+                        points as i32,
+                        _type.clone(),
+                    )?;
+
+                    if edited {
+                        let mut writer = p.blocking_write();
+                        let s = writer.streamers.get_mut(&channel_id).unwrap();
+                        s.points = points;
+                        s.last_points_refresh = now
+                    }
+                    Ok(())
+                }))
+                .await
+                .map_err(|_| eyre!("Failed to send prediction to analytics"))?;
             }
         }
         Ok(())
     }
 
-    loop {
-        if let Err(err) = inner(&pubsub, &gql).await {
-            error!("update_and_claim_points {err}");
-        }
+    // #[tracing::instrument]
+    pub async fn run(
+        pubsub: Arc<RwLock<PubSub>>,
+        gql: gql::Client,
+        tx: Sender<analytics::Request>,
+    ) {
+        loop {
+            if let Err(err) = inner(&pubsub, &gql, &tx).await {
+                error!("update_and_claim_points {err}");
+            }
 
-        sleep(Duration::from_secs(60)).await
+            sleep(Duration::from_secs(60)).await
+        }
     }
 }
 
-async fn update_spade_url(pubsub: Arc<RwLock<PubSub>>) {
-    let base_url = { pubsub.read().await.base_url.clone() };
+mod update_spade_url {
+    use super::*;
+
+    // #[tracing::instrument]
     async fn inner(pubsub: &Arc<RwLock<PubSub>>, base_url: &str) -> Result<()> {
         let a_live_stream = {
             let reader = pubsub.read().await;
@@ -793,12 +886,16 @@ async fn update_spade_url(pubsub: Arc<RwLock<PubSub>>) {
         Ok(())
     }
 
-    loop {
-        if let Err(err) = inner(&pubsub, &base_url).await {
-            error!("update_and_claim_points {err}");
-        }
+    // #[tracing::instrument]
+    pub async fn run(pubsub: Arc<RwLock<PubSub>>) {
+        let base_url = { pubsub.read().await.base_url.clone() };
+        loop {
+            if let Err(err) = inner(&pubsub, &base_url).await {
+                error!("update_and_claim_points {err}");
+            }
 
-        sleep(Duration::from_secs(120)).await
+            sleep(Duration::from_secs(120)).await
+        }
     }
 }
 

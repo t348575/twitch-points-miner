@@ -1,22 +1,20 @@
 use std::sync::Arc;
 
-use axum::{extract::State, routing::post, Extension, Json, Router};
-use common::twitch::auth::Token;
+use axum::{extract::State, routing::post, Json, Router};
 use serde::Deserialize;
 use utoipa::ToSchema;
 
 use crate::{
-    analytics::{model::Outcome, TimelineResult},
+    analytics::{model::Outcome, AnalyticsWrapper, TimelineResult},
     make_paths,
 };
 
-use super::{ApiError, ApiState, RouterBuild};
+use super::{ApiError, RouterBuild};
 
-pub fn build(state: ApiState, token: Arc<Token>) -> RouterBuild {
+pub fn build(analytics: Arc<AnalyticsWrapper>) -> RouterBuild {
     let routes = Router::new()
         .route("/timeline", post(points_timeline))
-        .layer(Extension(token))
-        .with_state(state);
+        .with_state(analytics);
 
     let schemas = vec![Outcome::schema(), Timeline::schema()];
 
@@ -45,7 +43,7 @@ struct Timeline {
     request_body = Timeline
 )]
 async fn points_timeline(
-    State(data): State<ApiState>,
+    State(analytics): State<Arc<AnalyticsWrapper>>,
     axum::extract::Json(timeline): axum::extract::Json<Timeline>,
 ) -> Result<Json<Vec<TimelineResult>>, ApiError> {
     use chrono::FixedOffset;
@@ -53,9 +51,7 @@ async fn points_timeline(
     let from = chrono::DateTime::<FixedOffset>::parse_from_rfc3339(&timeline.from)?.naive_local();
     let to = chrono::DateTime::<FixedOffset>::parse_from_rfc3339(&timeline.to)?.naive_local();
 
-    let writer = data.write().await;
-    let res = writer
-        .analytics
+    let res = analytics
         .execute(|analytics| analytics.timeline(from, to, &timeline.channels))
         .await?;
     Ok(Json(res))

@@ -14,6 +14,8 @@ use twitch_api::pubsub::community_points::CommunityPointsUserV1;
 use twitch_api::pubsub::video_playback::{VideoPlaybackById, VideoPlaybackReply};
 use twitch_api::pubsub::{TopicData, Topics};
 
+use crate::analytics::{Analytics, AnalyticsWrapper};
+
 mod analytics;
 // mod live;
 mod pubsub;
@@ -37,9 +39,6 @@ struct Args {
     /// Log to file
     #[arg(short, long)]
     log_file: Option<String>,
-    /// Enable analytics, enabled by default
-    #[arg(long, default_value_t = true)]
-    analytics: bool,
     /// Analytics database path
     #[arg(long, default_value_t = String::from("analytics.db"))]
     analytics_db: String,
@@ -139,11 +138,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    let analytics = if args.analytics {
-        Arc::new(analytics::AnalyticsWrapper::new(&args.analytics_db)?)
-    } else {
-        Arc::new(analytics::AnalyticsWrapper::empty())
-    };
+    let (mut analytics, analytics_tx) = Analytics::new(&args.analytics_db)?;
 
     let channels = channels.into_iter().flatten().collect::<Vec<_>>();
     let points = gql
@@ -157,19 +152,9 @@ async fn main() -> Result<()> {
 
     for (c, p) in channels.iter().zip(&points) {
         let id = c.0.as_str().parse::<i32>()?;
-        let inserted = analytics
-            .execute(|analytics| analytics.insert_streamer(id, c.1.channel_name.clone()))
-            .await?;
+        let inserted = analytics.insert_streamer(id, c.1.channel_name.clone())?;
         if inserted {
-            analytics
-                .execute(|analytics| {
-                    analytics.insert_points(
-                        id,
-                        p.0 as i32,
-                        analytics::model::PointsInfo::FirstEntry,
-                    )
-                })
-                .await?;
+            analytics.insert_points(id, p.0 as i32, analytics::model::PointsInfo::FirstEntry)?;
         }
     }
 
@@ -238,15 +223,27 @@ async fn main() -> Result<()> {
         gql.clone(),
         BASE_URL,
         ws_tx,
-        analytics,
-        args.log_file,
+        Arc::new(AnalyticsWrapper::new(analytics)),
+        analytics_tx.clone(),
     )?));
 
-    let pubsub = spawn(pubsub::PubSub::run(ws_rx, pubsub_data.clone(), gql));
+    let pubsub = spawn(pubsub::PubSub::run(
+        ws_rx,
+        pubsub_data.clone(),
+        gql,
+        analytics_tx,
+    ));
 
     info!("Starting web api!");
 
-    let axum_server = web_api::get_api_server(args.address, pubsub_data, Arc::new(token)).await;
+    let axum_server = web_api::get_api_server(
+        args.address,
+        pubsub_data,
+        Arc::new(token),
+        &args.analytics_db,
+        args.log_file,
+    )
+    .await?;
 
     axum_server.await?;
     pubsub.await??;

@@ -103,7 +103,12 @@ impl WsPool {
                 self.retry_add_connection().await;
             }
 
-            match self.rx.recv_timeout(Duration::from_millis(1)) {
+            match self.rx.recv_timeout(Duration::from_millis(
+                #[cfg(feature = "testing")]
+                1,
+                #[cfg(not(feature = "testing"))]
+                250
+            )) {
                 Ok(Request::Listen(topic)) => {
                     debug!("Got request to add topic {topic:#?}");
                     let topic_already_exists = self
@@ -462,10 +467,21 @@ async fn ws_reader(
                             }
                         }
                     }
-                    Response::Message { data } => tx
-                        .send_async(data)
-                        .await
-                        .context("Could not send topic data")?,
+                    Response::Message { data } => {
+                        if let TopicData::VideoPlaybackById { topic: _, reply } = &data {
+                            match reply.as_ref() {
+                                VideoPlaybackReply::StreamUp {
+                                    server_time: _,
+                                    play_delay: _,
+                                } => {}
+                                VideoPlaybackReply::StreamDown { server_time: _ } => {}
+                                _ => continue,
+                            }
+                        }
+                        tx.send_async(data)
+                            .await
+                            .context("Could not send topic data")?;
+                    }
                     Response::Pong => state.lock().await.last_update = Instant::now(),
                     Response::Reconnect => {
                         state.lock().await.stream_state = WsStreamState::Reconnect;
