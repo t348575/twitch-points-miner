@@ -36,6 +36,7 @@
     "mode-watcher": "^0.3.0",
     "openapi-fetch": "^0.9.3",
     "svelte-sonner": "^0.3.22",
+    "svelte-spa-router": "^4.0.1",
     "tailwind-merge": "^2.2.2",
     "tailwind-variants": "^0.2.1",
     "vaul-svelte": "^0.3.0"

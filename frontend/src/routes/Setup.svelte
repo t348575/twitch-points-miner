@@ -30,11 +30,11 @@
     add_or_update_preset,
     delete_preset,
     get_watching,
-  } from "./common";
+  } from "../common";
   import { ArrowUpDown, SlidersHorizontal, X } from "lucide-svelte";
-  import Config from "./Config.svelte";
-  import type { components } from "./api";
-  import WatchPriority from "./WatchPriority.svelte";
+  import Config from "../lib/components/ui/Config.svelte";
+  import type { components } from "../api";
+  import WatchPriority from "../lib/components/ui/WatchPriority.svelte";
   import { ScrollArea } from "$lib/components/ui/scroll-area";
 
   let data = writable<Streamer[]>([]);

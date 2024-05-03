@@ -1,7 +1,7 @@
 <script lang="ts">
   import * as Card from "$lib/components/ui/card";
   import { onMount } from "svelte";
-  import { get_logs } from "./common";
+  import { get_logs } from "../common";
   import { ScrollArea } from "$lib/components/ui/scroll-area";
   import { Button } from "$lib/components/ui/button";
   import { ChevronLeft, ChevronRight, RefreshCcw } from "lucide-svelte";

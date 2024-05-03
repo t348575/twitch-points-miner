@@ -12,9 +12,9 @@
     get_live_streamers,
     get_last_prediction,
     place_bet_streamer,
-  } from "./common";
+  } from "../common";
   import { get } from "svelte/store";
-  import type { components } from "./api";
+  import type { components } from "../api";
   import type { Selected } from "bits-ui";
   import { RefreshCcw } from "lucide-svelte";
 
