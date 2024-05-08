@@ -80,12 +80,14 @@ impl Client {
         Client { access_token, url }
     }
 
-    fn gql_req(&self) -> ureq::Request {
-        ureq::post(&self.url)
-            .set("Client-Id", CLIENT_ID)
-            .set("User-Agent", USER_AGENT)
-            .set("X-Device-Id", DEVICE_ID)
-            .set("Authorization", &format!("OAuth {}", self.access_token))
+    fn gql_req(&self) -> reqwest::RequestBuilder {
+        let client = reqwest::Client::new();
+        client
+            .post(&self.url)
+            .header("Client-Id", CLIENT_ID)
+            .header("User-Agent", USER_AGENT)
+            .header("X-Device-Id", DEVICE_ID)
+            .header("Authorization", &format!("OAuth {}", self.access_token))
     }
 
     pub async fn streamer_metadata(
@@ -97,7 +99,7 @@ impl Client {
             .map(|user| GqlRequest::stream_metadata(user))
             .collect::<Vec<_>>();
 
-        let items: serde_json::Value = self.gql_req().send_json(&users)?.into_json()?;
+        let items: serde_json::Value = self.gql_req().json(&users).send().await?.json().await?;
         if !items.is_array() {
             return Err(eyre!("Failed to get streamer metadata"));
         }
@@ -135,13 +137,13 @@ impl Client {
         }
 
         let pred = GqlRequest::make_prediction(event_id, outcome_id, points);
-        let res = self.gql_req().send_json(&pred)?;
+        let res = self.gql_req().json(&pred).send().await?;
 
-        if res.status() > 299 {
+        if !res.status().is_success() {
             return Err(eyre!("Failed to place prediction"));
         }
 
-        let mut res = res.into_json()?;
+        let mut res = res.json().await?;
         let res = traverse_json(&mut res, ".data.makePrediction.error").unwrap();
         if !res.is_null() {
             return Err(eyre!("Failed to make prediction: {:#?}", res));
@@ -159,12 +161,12 @@ impl Client {
             .map(|name| GqlRequest::channel_points_context(name))
             .collect::<Vec<_>>();
 
-        let res = self.gql_req().send_json(&reqs)?;
-        if res.status() > 299 {
+        let res = self.gql_req().json(&reqs).send().await?;
+        if !res.status().is_success() {
             return Err(eyre!("Failed to get channel points"));
         }
 
-        let json: serde_json::Value = res.into_json()?;
+        let json: serde_json::Value = res.json().await?;
         if !json.is_array() {
             return Err(eyre!(
                 "Failed to get channel points, expected array as response"
@@ -198,7 +200,7 @@ impl Client {
     /// (UserID, UserName)
     pub async fn get_user_id(&self) -> Result<(String, String)> {
         let mut data = self.gql_req()
-            .send_json(&json!({
+            .json(&json!({
                 "operationName": "CoreActionsCurrentUser",
                 "variables": {},
                 "extensions": {
@@ -207,7 +209,7 @@ impl Client {
                         "sha256Hash": "6b5b63a013cf66a995d61f71a508ab5c8e4473350c5d4136f846ba65e8101e95"
                     }
                 }
-            }))?.into_json()?;
+            })).send().await?.json().await?;
 
         let user_id = traverse_json(&mut data, ".data.currentUser.id")
             .map(|x| x.as_str().unwrap().to_owned())
@@ -221,13 +223,13 @@ impl Client {
 
     pub async fn claim_points(&self, channel_id: &str, claim_id: &str) -> Result<u32> {
         let claim = GqlRequest::claim_community_points(claim_id, channel_id);
-        let res = self.gql_req().send_json(&claim)?;
+        let res = self.gql_req().json(&claim).send().await?;
 
-        if res.status() > 299 {
+        if !res.status().is_success() {
             return Err(eyre!("Failed to claim points"));
         }
 
-        let mut res = res.into_json()?;
+        let mut res = res.json().await?;
         let current_points = traverse_json(&mut res, ".data.claimCommunityPoints.currentPoints")
             .unwrap()
             .as_u64()
@@ -244,12 +246,12 @@ impl Client {
             .iter()
             .map(|x| GqlRequest::channel_points_prediction_context(x))
             .collect::<Vec<_>>();
-        let res = self.gql_req().send_json(&request)?;
-        if res.status() > 299 {
+        let res = self.gql_req().json(&request).send().await?;
+        if !res.status().is_success() {
             return Err(eyre!("Failed to claim points"));
         }
 
-        let res: Vec<serde_json::Value> = res.into_json()?;
+        let res: Vec<serde_json::Value> = res.json().await?;
         let active_predictions = res
             .into_iter()
             .filter_map(|mut x| {
@@ -318,9 +320,9 @@ impl Client {
 
     pub async fn join_raid(&self, raid_id: &str) -> Result<()> {
         let claim = GqlRequest::join_raid(raid_id);
-        let res = self.gql_req().send_json(&claim)?;
+        let res = self.gql_req().json(&claim).send().await?;
 
-        if res.status() > 299 {
+        if !res.status().is_success() {
             return Err(eyre!("Failed to join raid"));
         }
         Ok(())

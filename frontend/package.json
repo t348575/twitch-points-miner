@@ -1,7 +1,7 @@
 {
   "name": "frontend",
   "private": true,
-  "version": "0.1.9",
+  "version": "0.1.11",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -30,7 +30,7 @@
     "@internationalized/date": "^3.5.2",
     "@unovis/svelte": "^1.4.0",
     "@unovis/ts": "^1.4.0",
-    "bits-ui": "^0.21.3",
+    "bits-ui": "^0.21.7",
     "clsx": "^2.1.0",
     "lucide-svelte": "^0.366.0",
     "mode-watcher": "^0.3.0",

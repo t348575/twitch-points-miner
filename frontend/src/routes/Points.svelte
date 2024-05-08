@@ -23,7 +23,7 @@
   import * as Select from "$lib/components/ui/select";
   import type { Selected } from "bits-ui";
   import { get_timeline, streamers, type Streamer } from "../common";
-  let margin = {top: 50};
+  let margin = { top: 50 };
 
   let streamers_name: Streamer[] = [];
   let selected_streamers: Streamer[] = [];
@@ -33,26 +33,13 @@
     label: "Descending",
   };
 
-  $: {
-    if (streamers_name) {
-      s_selected = streamers_name.map((a) =>
-        selected_streamers.find((b) => b.id == a.id) == undefined
-          ? ""
-          : "outline",
-      );
-      render_timeline();
-    }
-  }
-
-  streamers.subscribe(s => {
-    streamers_name = s
+  streamers.subscribe((s) => {
+    streamers_name = s;
     if (streamers_name.length > 0) {
       sort_streamers(sort_selection);
       selected_streamers = [streamers_name[0] as Streamer];
-
-      render_timeline();
     }
-  })
+  });
 
   interface PointData {
     idx: Date;
@@ -81,7 +68,17 @@
         reason = `Prediction - ${d.value.prediction?.title}`;
       }
     }
-    return `Points: ${d.value.point.points_value}<br/>Reason: ${reason}<br/>At: ${new Date(d.value.point.created_at).toLocaleString()}`;
+
+    let difference = "";
+    if (d.value.difference !== null && d.value.difference !== 0) {
+      if (d.value.difference > 0) {
+        difference = `(+${d.value.difference})`;
+      } else {
+        difference = `(${d.value.difference})`;
+      }
+    }
+
+    return `Points: ${difference} ${d.value.point.points_value}<br/>Reason: ${reason}<br/>At: ${new Date(d.value.point.created_at).toLocaleString()}`;
   };
 
   const df = new DateFormatter("en-UK", {
@@ -102,10 +99,18 @@
   });
 
   let currentDate: { start: CalendarDate; end: CalendarDate };
-  value.subscribe((s) => {
-    currentDate = s;
-    render_timeline();
-  });
+
+  $: {
+    if (streamers_name || $value) {
+      currentDate = $value;
+      s_selected = streamers_name.map((a) =>
+        selected_streamers.find((b) => b.id == a.id) == undefined
+          ? ""
+          : "outline",
+      );
+      render_timeline();
+    }
+  }
 
   let startValue: DateValue | undefined = undefined;
 
@@ -128,6 +133,10 @@
   }
 
   async function render_timeline() {
+    if (selected_streamers.length === 0) {
+      return;
+    }
+
     let idx = 0;
     let from = new Date(
       currentDate?.start?.year,
@@ -253,7 +262,11 @@
           </Popover.Root>
         </div>
         <VisXYContainer data={timeline} class="mt-4" {margin} height={500}>
-          <VisTooltip horizontalShift={50} verticalShift={50} verticalPlacement="top" />
+          <VisTooltip
+            horizontalShift={50}
+            verticalShift={50}
+            verticalPlacement="top"
+          />
           <VisLine {x} {y} curveType="linear" lineWidth={3} />
           <VisAxis
             type="x"

@@ -52,7 +52,8 @@ services:
       - ./data:/data
       - ./config.yaml:/config.yaml # change this if needed to your config file
     command:
-      - -t /data/tokens.json
+      - -t
+      - /data/tokens.json
       - --analytics-db
       - /data/analytics.db
       - --log-file

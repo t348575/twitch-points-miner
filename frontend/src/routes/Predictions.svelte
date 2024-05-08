@@ -5,7 +5,7 @@
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
   import ErrorAlert from "$lib/components/ui/ErrorAlert.svelte";
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import {
     streamers,
     type Streamer,
@@ -36,12 +36,33 @@
   let prediction_points: undefined | string = undefined;
   let error_message: undefined | string = undefined;
   let prediction_time_up = false;
+  let time_left = 0;
+  let interval: number | undefined;
+
+  $: if (prediction) {
+    if (interval) {
+      clearInterval(interval)
+    }
+
+    const func = () => {
+      const temp = (new Date(prediction.created_at).getTime() + (prediction.prediction_window_seconds * 1000) - new Date().getTime()) / 1000
+      time_left = Math.floor(temp)
+    };
+    func()
+
+    interval = setInterval(func, 1000)
+  }
+
+  onDestroy(() => {
+    if (interval) {
+      clearInterval(interval)
+    }
+  })
 
   $: make_prediction_class = `flex flex-col justify-center items-center ${live_streamers.length == 0 ? "opacity-25 pointer-events-none" : ""}`;
 
   onMount(async () => {
     streamers_name = get(streamers);
-
     await refresh_live_streamers();
   });
 
@@ -76,10 +97,10 @@
 
     const l = live_streamers.find((a) => v.value == a.value);
     if (l) {
+      prediction = undefined;
+      prediction_made = null;
       const preds: string[] = Object.keys(l.streamer.state.predictions);
       if (preds.length == 0) {
-        prediction = undefined;
-        prediction_made = null;
         return;
       }
 
@@ -88,7 +109,7 @@
       ] as PredictionType[];
       prediction = preds_list[0];
 
-      prediction_time_up = new Date(new Date(prediction?.created_at as string).getTime() + prediction?.prediction_window_seconds * 1000) > new Date();
+      prediction_time_up = (new Date(prediction.created_at).getTime() + (prediction.prediction_window_seconds * 1000) - new Date().getTime()) / 1000 < 0;
       pred_total_points =
         prediction?.outcomes.reduce(
           (n, { total_points }) => (n += total_points),
@@ -136,6 +157,8 @@
 
     error_message = undefined;
     prediction_points = undefined;
+    streamers_name = get(streamers);
+    await refresh_live_streamers();
   }
 </script>
 
@@ -176,10 +199,13 @@
         <div class="w-3/4 mt-8 text-center">
           {#if prediction}
             <p class="text-xl">
-              Points: {live_streamers.find(
+              Channel points: {live_streamers.find(
                 (a) => a.value == selected_streamer_for_prediction?.value,
               )?.streamer.state.points}
             </p>
+            {#if time_left > 0}
+              <p class="text-lg">Time left: {time_left}s</p>
+            {/if}
             <p class="text-xl">{prediction.title}</p>
             <Table.Root>
               <Table.Header>
@@ -214,7 +240,7 @@
         </div>
       </Card.Content>
       <Card.Footer class="flex flex-col">
-        {#if prediction && prediction_made == null || (prediction_made !== null && typeof prediction_made.placed_bet == 'string')}
+        {#if prediction && (prediction_made == null || (prediction_made !== null && typeof prediction_made.placed_bet == 'string')) && !prediction_time_up}
           {#if outcome}
             <p class="m-2">
               Selected outcome: {prediction.outcomes.find((a) => a.id == outcome)

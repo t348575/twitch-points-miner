@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use axum::{extract::State, routing::post, Json, Router};
+use chrono::{DateTime, FixedOffset};
 use serde::Deserialize;
 use utoipa::ToSchema;
 
@@ -46,10 +47,8 @@ async fn points_timeline(
     State(analytics): State<Arc<AnalyticsWrapper>>,
     axum::extract::Json(timeline): axum::extract::Json<Timeline>,
 ) -> Result<Json<Vec<TimelineResult>>, ApiError> {
-    use chrono::FixedOffset;
-
-    let from = chrono::DateTime::<FixedOffset>::parse_from_rfc3339(&timeline.from)?.naive_local();
-    let to = chrono::DateTime::<FixedOffset>::parse_from_rfc3339(&timeline.to)?.naive_local();
+    let from = DateTime::from(DateTime::<FixedOffset>::parse_from_rfc3339(&timeline.from)?);
+    let to = DateTime::from(DateTime::<FixedOffset>::parse_from_rfc3339(&timeline.to)?);
 
     let res = analytics
         .execute(|analytics| analytics.timeline(from, to, &timeline.channels))

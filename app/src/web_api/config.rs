@@ -4,7 +4,7 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use common::config::{Config, ConfigType, StreamerConfig};
+use common::config::{Config, ConfigType, Normalize, StreamerConfig};
 use http::StatusCode;
 use indexmap::IndexMap;
 use serde::Deserialize;
@@ -125,14 +125,16 @@ async fn add_update_preset(
         return sub_error!(ConfigError::PresetConfigNameEqualsStreamerName);
     }
 
+    let mut preset_normalized = preset.config.clone();
+    preset_normalized.prediction.strategy.normalize();
     match writer.configs.get_mut(&preset.name) {
-        Some(c) => c.0.write().unwrap().config = preset.config.clone(),
+        Some(c) => c.0.write().unwrap().config = preset_normalized,
         None => {
             writer.configs.insert(
                 preset.name.clone(),
                 StreamerConfigRefWrapper::new(StreamerConfigRef {
                     _type: ConfigTypeRef::Preset(preset.name.clone()),
-                    config: preset.config.clone(),
+                    config: preset_normalized,
                 }),
             );
         }

@@ -21,14 +21,15 @@ pub struct Token {
 }
 
 pub async fn login(tokens: &str) -> Result<()> {
-    let flow: LoginFlowStart = ureq::post("https://id.twitch.tv/oauth2/device")
-        .set("Client-Id", CLIENT_ID)
-        .set("User-Agent", USER_AGENT)
-        .set("X-Device-Id", DEVICE_ID)
-        .send_form(&[
+    let client = reqwest::Client::new();
+    let flow: LoginFlowStart = client.post("https://id.twitch.tv/oauth2/device")
+        .header("Client-Id", CLIENT_ID)
+        .header("User-Agent", USER_AGENT)
+        .header("X-Device-Id", DEVICE_ID)
+        .form(&[
             ("client_id", CLIENT_ID),
             ("scopes", "channel_read chat:read user_blocks_edit user_blocks_read user_follows_edit user_read")
-        ])?.into_json()?;
+        ]).send().await?.json().await?;
 
     if !dialoguer::Confirm::new()
         .with_prompt(format!(
@@ -40,19 +41,24 @@ pub async fn login(tokens: &str) -> Result<()> {
         return Err(eyre!("User cancelled login"));
     }
 
-    let res: Token = ureq::post("https://id.twitch.tv/oauth2/token")
-        .set("Client-Id", CLIENT_ID)
-        .set("Host", "id.twitch.tv")
-        .set("Origin", "https://android.tv.twitch.tv")
-        .set("Refer", "https://android.tv.twitch.tv")
-        .set("User-Agent", USER_AGENT)
-        .set("X-Device-Id", DEVICE_ID)
-        .send_form(&[
+    let client = reqwest::Client::new();
+    let res: Token = client
+        .post("https://id.twitch.tv/oauth2/token")
+        .header("Client-Id", CLIENT_ID)
+        .header("Host", "id.twitch.tv")
+        .header("Origin", "https://android.tv.twitch.tv")
+        .header("Refer", "https://android.tv.twitch.tv")
+        .header("User-Agent", USER_AGENT)
+        .header("X-Device-Id", DEVICE_ID)
+        .form(&[
             ("client_id", CLIENT_ID),
             ("device_code", &flow.device_code),
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-        ])?
-        .into_json()?;
+        ])
+        .send()
+        .await?
+        .json()
+        .await?;
 
     tokio::fs::write(tokens, serde_json::to_string(&res)?)
         .await

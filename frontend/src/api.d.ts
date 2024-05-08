@@ -444,6 +444,8 @@ export interface components {
             to: string;
         };
         TimelineResult: {
+            /** Format: int32 */
+            difference?: number | null;
             point: components["schemas"]["Point"];
             prediction?: components["schemas"]["Prediction"] | null;
         };

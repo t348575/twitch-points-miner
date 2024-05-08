@@ -84,6 +84,8 @@ async fn main() -> Result<()> {
         tracing_opts.init();
     }
 
+    tracing::trace!("{args:#?}");
+
     if !Path::new(&args.token).exists() {
         info!("Starting login sequence");
         common::twitch::auth::login(&args.token).await?;
@@ -218,21 +220,15 @@ async fn main() -> Result<()> {
         active_predictions,
         c.presets.unwrap_or_default(),
         args.simulate,
-        token.clone(),
         user_info,
         gql.clone(),
         BASE_URL,
         ws_tx,
         Arc::new(AnalyticsWrapper::new(analytics)),
-        analytics_tx.clone(),
+        analytics_tx,
     )?));
 
-    let pubsub = spawn(pubsub::PubSub::run(
-        ws_rx,
-        pubsub_data.clone(),
-        gql,
-        analytics_tx,
-    ));
+    let pubsub = spawn(pubsub::PubSub::run(ws_rx, pubsub_data.clone(), gql));
 
     info!("Starting web api!");
 

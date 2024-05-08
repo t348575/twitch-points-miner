@@ -11,11 +11,14 @@ use crate::{
 use super::{CHROME_USER_AGENT, CLIENT_ID};
 
 pub async fn get_spade_url(streamer: &str, base_url: &str) -> Result<String> {
-    // let client = reqwest::Client::new();
-    let page_text = ureq::get(&format!("{base_url}/{streamer}"))
-        .set("User-Agent", CHROME_USER_AGENT)
-        .call()?
-        .into_string()?;
+    let client = reqwest::Client::new();
+    let page_text = client
+        .get(&format!("{base_url}/{streamer}"))
+        .header("User-Agent", CHROME_USER_AGENT)
+        .send()
+        .await?
+        .text()
+        .await?;
 
     async fn inner(
         text: &str,
@@ -29,10 +32,14 @@ pub async fn get_spade_url(streamer: &str, base_url: &str) -> Result<String> {
                     let prefix = format!("{base_url}/");
                     #[cfg(not(feature = "testing"))]
                     let prefix = "";
-                    let text = ureq::get(&format!("{prefix}{uri}{pattern_js}.js"))
-                        .set("User-Agent", CHROME_USER_AGENT)
-                        .call()?
-                        .into_string()?;
+                    let client = reqwest::Client::new();
+                    let text = client
+                        .get(&format!("{prefix}{uri}{pattern_js}.js"))
+                        .header("User-Agent", CHROME_USER_AGENT)
+                        .send()
+                        .await?
+                        .text()
+                        .await?;
                     match text.split_once(r#""spade_url":""#) {
                         Some((_, after)) => match after.split_once('"') {
                             Some((url, _)) => Ok(url.to_string()),
@@ -85,7 +92,6 @@ pub async fn set_viewership(
     channel_id: UserId,
     info: StreamerInfo,
     spade_url: &str,
-    access_token: &str,
 ) -> Result<()> {
     let watch_event = SetViewership {
         event: "minute-watched".to_owned(),
@@ -94,14 +100,17 @@ pub async fn set_viewership(
 
     let body = serde_json::to_string(&[watch_event])?;
 
-    let res = ureq::post(spade_url)
-        .set("Client-Id", CLIENT_ID)
-        .set("User-Agent", CHROME_USER_AGENT)
-        .set("X-Device-Id", DEVICE_ID)
-        .set("Authorization", &format!("OAuth {}", access_token))
-        .send_string(&URL_SAFE.encode(body))?;
+    let client = reqwest::Client::new();
+    let res = client
+        .post(spade_url)
+        .header("Client-Id", CLIENT_ID)
+        .header("User-Agent", CHROME_USER_AGENT)
+        .header("X-Device-Id", DEVICE_ID)
+        .form(&[("data", &URL_SAFE.encode(body))])
+        .send()
+        .await?;
 
-    if res.status() > 299 {
+    if !res.status().is_success() {
         return Err(eyre!("Failed to set viewership"));
     }
 
