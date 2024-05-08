@@ -1,6 +1,6 @@
 use std::thread::spawn;
 
-use chrono::{Local, NaiveDateTime};
+use chrono::{DateTime, Local, NaiveDateTime};
 use diesel::{
     deserialize, result::DatabaseErrorKind, row::NamedRow, sqlite::Sqlite, Connection,
     ConnectionError, ExpressionMethods, QueryDsl, QueryableByName, RunQueryDsl, SqliteConnection,
@@ -268,16 +268,17 @@ impl Analytics {
 
     pub fn timeline(
         &mut self,
-        from: NaiveDateTime,
-        to: NaiveDateTime,
+        from: DateTime<Local>,
+        to: DateTime<Local>,
         channels: &[i32],
     ) -> Result<Vec<TimelineResult>, AnalyticsError> {
         use diesel::sql_query;
 
         trace!("Timeline {from} {to} {channels:?}");
         let query = format!(
-            r#"select * from points left join predictions on points_info ->> '$.Prediction[0]' == prediction_id and points_info ->> '$.Prediction[1]' == predictions.id
-                where points.created_at >= '{}' and points.created_at <= '{}' and points.channel_id in ({}) order by points.created_at asc"#,
+            r#"select a.*, a.points_value - LAG(a.points_value) OVER (PARTITION BY a.channel_id ORDER BY a.created_at) AS difference, b.* from points a left join
+                predictions b on a.points_info ->> '$.Prediction[0]' == b.prediction_id and a.points_info ->> '$.Prediction[1]' == b.id
+                where a.created_at >= '{}' and a.created_at <= '{}' and a.channel_id in ({}) order by a.created_at asc"#,
             from,
             to,
             channels
@@ -336,6 +337,7 @@ impl Analytics {
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct TimelineResult {
     point: Point,
+    difference: Option<i32>,
     prediction: Option<Prediction>,
 }
 
@@ -346,7 +348,15 @@ impl QueryableByName<Sqlite> for TimelineResult {
             Err(_) => None,
         };
         let point = <Point as diesel::QueryableByName<Sqlite>>::build(row)?;
-        Ok(Self { point, prediction })
+        let difference = {
+            let field = diesel::row::NamedRow::get(row, "difference")?;
+            <Option<i32> as Into<Option<i32>>>::into(field)
+        };
+        Ok(Self {
+            point,
+            prediction,
+            difference,
+        })
     }
 }
 

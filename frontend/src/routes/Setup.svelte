@@ -142,7 +142,7 @@
       config_component.set_filters_strategy({
         _type: "Specific",
         config: {
-          prediction: entry.data.prediction
+          ...entry.data
         },
       });
     }

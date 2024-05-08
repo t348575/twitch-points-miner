@@ -1,6 +1,6 @@
 [package]
 name = "twitch-points-miner"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2021"
 resolver = "2"
 
@@ -36,7 +36,7 @@ ansi-to-html = "0.2"
 [dev-dependencies]
 common = { path = "../common", features = ["web_api", "testing"] }
 rstest = "0.19"
-ureq = { version = "2.9", default-features = false, features = ["json", "tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 [[bin]]
 name = "twitch-points-miner"

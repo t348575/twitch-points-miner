@@ -12,7 +12,9 @@
     DETAILED_STRATEGY_ODDS_COMPARISON_TYPES,
     detailed_strategy_stringify,
   } from "../../../strategy/strategy";
-    import type { Selected } from "bits-ui";
+  import type { Selected } from "bits-ui";
+  import { Switch } from "./switch";
+  import { Label } from "./label";
 
   export let filters: FilterType[];
   export let strategy: { value: string; label: string };
@@ -61,6 +63,7 @@
   export function set_filters_strategy(
     config: components["schemas"]["StreamerConfigRefWrapper"],
   ) {
+    console.log(config)
     if (typeof config._type === "string") {
       follow_raid = config.config.follow_raid;
       strategy = SPECIFIC_STRATEGY;
@@ -165,6 +168,10 @@
     {#if strategy_alert}
       <ErrorAlert message={strategy_error_message} />
     {/if}
+    <div class="flex items-center gap-4 mb-4">
+      <Switch id="follow-raid" bind:checked={follow_raid} />
+      <Label for="follow-raid">Follow raid</Label>
+    </div>
     <div class="flex items-center gap-4 mb-4">
       Strategy
       <Select.Root bind:selected={strategy} disabled={preset_mode}>

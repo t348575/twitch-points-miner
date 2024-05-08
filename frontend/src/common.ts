@@ -5,8 +5,8 @@ import { writable } from "svelte/store";
 export const streamers = writable<Streamer[]>([]);
 
 const baseUrl = import.meta.env.DEV
-  ? "http://localhost:3000/"
-  : window.location.href;
+  ? "http://localhost:3000"
+  : window.location.origin;
 const client = createClient<paths>({
   baseUrl,
 });
@@ -246,7 +246,7 @@ export async function get_logs(
   page_size: number,
 ): Promise<string> {
   const res = await fetch(
-    `${baseUrl}api/logs?page=${page}&per_page=${page_size}`,
+    `${baseUrl}/api/logs?page=${page}&per_page=${page_size}`,
   );
   return await res.text();
 }
