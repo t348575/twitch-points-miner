@@ -4,7 +4,7 @@ use std::{
 };
 
 use eyre::{Context, Report, Result};
-use flume::{Receiver, RecvTimeoutError, Sender};
+use flume::{Receiver, Sender};
 use futures_util::{
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
@@ -103,13 +103,19 @@ impl WsPool {
                 self.retry_add_connection().await;
             }
 
-            match self.rx.recv_timeout(Duration::from_millis(
-                #[cfg(feature = "testing")]
-                1,
-                #[cfg(not(feature = "testing"))]
-                250
-            )) {
-                Ok(Request::Listen(topic)) => {
+            let recv = timeout(
+                Duration::from_millis(
+                    #[cfg(feature = "testing")]
+                    1,
+                    #[cfg(not(feature = "testing"))]
+                    250,
+                ),
+                self.rx.recv_async(),
+            )
+            .await;
+
+            match recv {
+                Ok(Ok(Request::Listen(topic))) => {
                     debug!("Got request to add topic {topic:#?}");
                     let topic_already_exists = self
                         .connections
@@ -123,7 +129,7 @@ impl WsPool {
                         debug!("Got request to add existing topic {topic:#?}");
                     }
                 }
-                Ok(Request::UnListen(topic)) => {
+                Ok(Ok(Request::UnListen(topic))) => {
                     debug!("Got request to remove topic {topic:#?}");
                     let mut conn = None;
                     self.connections = self
@@ -162,8 +168,8 @@ impl WsPool {
                             .await;
                     }
                 }
-                Err(RecvTimeoutError::Disconnected) => break,
-                Err(RecvTimeoutError::Timeout) => {}
+                Ok(Err(_)) => break,
+                Err(_) => {}
             }
 
             for mut conn in self.connections.drain(..).collect::<Vec<_>>() {
@@ -556,7 +562,12 @@ mod test {
         let container = container.await;
         let pubsub_uri = format!("http://localhost:{}/pubsub", container.port);
 
-        ureq::post(&format!("{pubsub_uri}/test_mode")).send_json(&json!("Reconnect"))?;
+        let client = reqwest::Client::new();
+        client
+            .post(&format!("{pubsub_uri}/test_mode"))
+            .json(&json!("Reconnect"))
+            .send()
+            .await?;
 
         let (pool, tx, (_, _)) =
             WsPool::start("test", format!("ws://localhost:{}", container.port)).await;
@@ -567,9 +578,12 @@ mod test {
             .await;
 
         loop {
-            let mut mock: serde_json::Value = ureq::get(&format!("{pubsub_uri}/test_stats"))
-                .call()?
-                .into_json()?;
+            let mut mock: serde_json::Value = client
+                .get(&format!("{pubsub_uri}/test_stats"))
+                .send()
+                .await?
+                .json()
+                .await?;
             let connect_count = traverse_json(&mut mock, ".Reconnect.count");
             if connect_count.is_none() {
                 sleep(Duration::from_millis(1)).await;
@@ -597,7 +611,12 @@ mod test {
         let container = container.await;
         let pubsub_uri = format!("http://localhost:{}/pubsub", container.port);
 
-        ureq::post(&format!("{pubsub_uri}/test_mode")).send_json(&json!("RetryCommand"))?;
+        let client = reqwest::Client::new();
+        client
+            .post(&format!("{pubsub_uri}/test_mode"))
+            .json(&json!("RetryCommand"))
+            .send()
+            .await?;
 
         let (pool, tx, (_, _)) =
             WsPool::start("test", format!("ws://localhost:{}", container.port)).await;
@@ -608,9 +627,12 @@ mod test {
             .await;
 
         loop {
-            let mut mock: serde_json::Value = ureq::get(&format!("{pubsub_uri}/test_stats"))
-                .call()?
-                .into_json()?;
+            let mut mock: serde_json::Value = client
+                .get(&format!("{pubsub_uri}/test_stats"))
+                .send()
+                .await?
+                .json()
+                .await?;
 
             let connect_count = traverse_json(&mut mock, ".RetryCommand.count");
             if connect_count.unwrap().as_i64().unwrap() == 2 {
@@ -631,7 +653,12 @@ mod test {
         let container = container.await;
         let pubsub_uri = format!("http://localhost:{}/pubsub", container.port);
 
-        ureq::post(&format!("{pubsub_uri}/test_mode")).send_json(&json!("ScaleConnections"))?;
+        let client = reqwest::Client::new();
+        client
+            .post(&format!("{pubsub_uri}/test_mode"))
+            .json(&json!("ScaleConnections"))
+            .send()
+            .await?;
 
         let (pool, tx, (_, rx)) =
             WsPool::start("test", format!("ws://localhost:{}", container.port)).await;
@@ -644,9 +671,12 @@ mod test {
         }
 
         loop {
-            let mut mock: serde_json::Value = ureq::get(&format!("{pubsub_uri}/test_stats"))
-                .call()?
-                .into_json()?;
+            let mut mock: serde_json::Value = client
+                .get(&format!("{pubsub_uri}/test_stats"))
+                .send()
+                .await?
+                .json()
+                .await?;
 
             let topics = traverse_json(&mut mock, ".ScaleConnections.topics");
             if topics.unwrap().as_i64().unwrap() == 50 {
@@ -665,9 +695,12 @@ mod test {
             .await;
 
         loop {
-            let mut mock: serde_json::Value = ureq::get(&format!("{pubsub_uri}/test_stats"))
-                .call()?
-                .into_json()?;
+            let mut mock: serde_json::Value = client
+                .get(&format!("{pubsub_uri}/test_stats"))
+                .send()
+                .await?
+                .json()
+                .await?;
 
             let topics = traverse_json(&mut mock, ".ScaleConnections.topics");
             if topics.unwrap().as_i64().unwrap() == 51 {
