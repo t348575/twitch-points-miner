@@ -84,6 +84,8 @@ async fn main() -> Result<()> {
         tracing_opts.init();
     }
 
+    tracing::trace!("{args:#?}");
+
     if !Path::new(&args.token).exists() {
         info!("Starting login sequence");
         common::twitch::auth::login(&args.token).await?;
