@@ -4,7 +4,10 @@ use axum::{
     extract::{
         ws::{Message, WebSocket},
         State, WebSocketUpgrade,
-    }, response::{IntoResponse, Response as AxumResponse}, routing::{get, post}, Form, Json, Router
+    },
+    response::{IntoResponse, Response as AxumResponse},
+    routing::{get, post},
+    Form, Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE, Engine};
 use common::twitch::{
@@ -171,10 +174,13 @@ async fn set_streamer_metadata(
 
 #[derive(Deserialize)]
 struct SpadeData {
-    data: String
+    data: String,
 }
 
-async fn spade_handler(State(state): State<Arc<Mutex<AppState>>>, Form(data): Form<SpadeData>) -> StatusCode {
+async fn spade_handler(
+    State(state): State<Arc<Mutex<AppState>>>,
+    Form(data): Form<SpadeData>,
+) -> StatusCode {
     let body = String::from_utf8(URL_SAFE.decode(&data.data).unwrap()).unwrap();
     let payload: Vec<SetViewership> = serde_json::from_str(&body).unwrap();
     let mut state = state.lock().await;

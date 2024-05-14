@@ -1,4 +1,4 @@
-FROM t348575/muslrust-chef:1.77.1-stable as chef
+FROM t348575/muslrust-chef:1.78.0-stable as chef
 WORKDIR /tpm
 
 FROM chef as planner

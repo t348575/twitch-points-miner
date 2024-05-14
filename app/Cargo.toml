@@ -19,7 +19,7 @@ eyre = "0.6"
 rand = "0.8"
 serde_yaml = "0.9"
 chrono = { version = "0.4", features = ["serde"] }
-axum = "0.7"
+axum = { version = "0.7", features = ["http2"] }
 libsqlite3-sys = { version = "0.28", features = ["bundled"], default-features = false }
 diesel = { version = "2", features = ["sqlite", "chrono"] }
 diesel_migrations = { version = "2", features = ["sqlite"] }
@@ -36,7 +36,7 @@ ansi-to-html = "0.2"
 [dev-dependencies]
 common = { path = "../common", features = ["web_api", "testing"] }
 rstest = "0.19"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["http2", "rustls-tls", "json"] }
 
 [[bin]]
 name = "twitch-points-miner"

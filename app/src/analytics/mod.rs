@@ -140,6 +140,16 @@ impl Analytics {
         Ok(())
     }
 
+    pub fn get_points(&mut self, c_id: i32) -> Result<i32, AnalyticsError> {
+        use schema::points::dsl::*;
+        points
+            .filter(channel_id.eq(c_id))
+            .order(created_at.desc())
+            .select(points_value)
+            .first(self.conn.as_mut().unwrap())
+            .map_err(|err| AnalyticsError::from_diesel_error(err, "Get points".to_owned()))
+    }
+
     pub fn insert_points_if_updated(
         &mut self,
         c_id: i32,
@@ -207,12 +217,10 @@ impl Analytics {
             }
             Err(err) => match err {
                 diesel::result::Error::NotFound => insert_prediction(prediction),
-                err => {
-                    return Err(AnalyticsError::from_diesel_error(
-                        err,
-                        format!("Upsert prediction {prediction:?}"),
-                    ))
-                }
+                err => Err(AnalyticsError::from_diesel_error(
+                    err,
+                    format!("Upsert prediction {prediction:?}"),
+                )),
             },
         }
     }
@@ -290,7 +298,7 @@ impl Analytics {
 
         let items = sql_query(query)
             .get_results(self.conn.as_mut().unwrap())
-            .map_err(|err| AnalyticsError::from_diesel_error(err, format!("Points timeline")))?;
+            .map_err(|err| AnalyticsError::from_diesel_error(err, "Points timeline".to_string()))?;
         Ok(items)
     }
 
@@ -303,7 +311,7 @@ impl Analytics {
             .select(id)
             .first(self.conn.as_mut().unwrap())
             .map_err(|err| {
-                AnalyticsError::from_diesel_error(err, format!("Last prediction by ID"))
+                AnalyticsError::from_diesel_error(err, "Last prediction by ID".to_string())
             })?;
         Ok(entry_id)
     }

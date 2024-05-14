@@ -10,9 +10,12 @@ use tracing::info;
 use tracing_subscriber::fmt::format::{Compact, DefaultFields};
 use tracing_subscriber::fmt::time::ChronoLocal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
-use twitch_api::pubsub::community_points::CommunityPointsUserV1;
-use twitch_api::pubsub::video_playback::{VideoPlaybackById, VideoPlaybackReply};
-use twitch_api::pubsub::{TopicData, Topics};
+use twitch_api::pubsub::{
+    community_points::CommunityPointsUserV1,
+    predictions::PredictionsUserV1,
+    video_playback::{VideoPlaybackById, VideoPlaybackReply},
+    TopicData, Topics,
+};
 
 use crate::analytics::{Analytics, AnalyticsWrapper};
 
@@ -205,6 +208,14 @@ async fn main() -> Result<()> {
         )))
         .await
         .context("Could not add user to pubsub")?;
+    ws_tx
+        .send_async(Request::Listen(Topics::PredictionsUserV1(
+            PredictionsUserV1 {
+                channel_id: user_info.0.parse().unwrap(),
+            },
+        )))
+        .await
+        .context("Could not add user to predictions-user-v1")?;
     // we definitely do not want to keep this in scope
     drop(ws_data_tx);
 

@@ -220,7 +220,7 @@ impl PubSub {
                 Err(err) => warn!("Error handling response: {err:?}"),
             }
 
-            for (channel_id, time) in deferred_updates.drain(..).collect::<Vec<_>>() {
+            for (channel_id, time) in std::mem::take(&mut deferred_updates) {
                 if time.elapsed() > Duration::from_secs(30) {
                     if let Err(err) = pubsub
                         .write()
@@ -301,21 +301,51 @@ impl PubSub {
             TopicData::CommunityPointsUserV1 { topic, reply } => {
                 debug!("Got CommunityPointsUserV1 {:#?}", topic);
 
-                if let CommunityPointsUserV1Reply::ClaimClaimed {
+                if let CommunityPointsUserV1Reply::PointsEarned {
                     timestamp: _,
-                    claim,
+                    channel_id,
+                    point_gain: _,
+                    balance,
                 } = *reply
                 {
-                    if claim.user_id.as_str().ne(&self.user_id) {
+                    if balance.user_id.as_str().ne(&self.user_id) {
                         return Ok(None);
                     };
 
-                    if self.streamers.contains_key(&claim.channel_id) {
-                        debug!("Channel points updated for {}", claim.channel_id);
-                        let s = self.streamers.get_mut(&claim.channel_id).unwrap();
-                        s.points = claim.point_gain.total_points as u32;
+                    if self.streamers.contains_key(&channel_id) {
+                        debug!("Channel points updated for {}", channel_id);
+                        let s = self.streamers.get_mut(&channel_id).unwrap();
+                        s.points = balance.balance as u32;
                         s.last_points_refresh = Instant::now();
                     }
+                }
+            }
+            TopicData::PredictionsUserV1 { topic, reply } => {
+                debug!("Got PredictionsUserV1 {:#?}", topic);
+                if reply.type_field != "prediction-result" {
+                    return Ok(None);
+                }
+
+                if let Some(result) = reply.data.prediction.result {
+                    let mut points_gained = 0;
+                    if result.type_field == "WIN" {
+                        points_gained = result.points_won.unwrap_or_default() as i32;
+                    }
+
+                    let channel_id = reply.data.prediction.channel_id.parse()?;
+                    let event_id = reply.data.prediction.event_id;
+                    self.analytics_tx
+                        .send_async(Box::new(move |analytics| {
+                            let points_value = analytics.get_points(channel_id)?;
+                            let entry_id = analytics.last_prediction_id(channel_id, &event_id)?;
+                            analytics.insert_points(
+                                channel_id,
+                                points_value + points_gained,
+                                PointsInfo::Prediction(event_id.clone(), entry_id),
+                            )
+                        }))
+                        .await
+                        .map_err(|_| eyre!("Failed to send prediction"))?;
                 }
             }
             TopicData::Raid { topic, reply } => {
@@ -423,11 +453,6 @@ impl PubSub {
             self.upsert_prediction(&streamer, &event).await?;
 
             let channel_id = event.channel_id.parse()?;
-            let points_value = self
-                .gql
-                .get_channel_points(&[&self.streamers.get(&streamer).unwrap().info.channel_name])
-                .await?[0]
-                .0;
             let closed_at = chrono::DateTime::<chrono::offset::FixedOffset>::parse_from_rfc3339(
                 event.ended_at.as_ref().unwrap().as_str(),
             )?
@@ -437,12 +462,6 @@ impl PubSub {
             self.analytics_tx
                 .send_async(Box::new(move |analytics| {
                     let event = &event_c;
-                    let entry_id = analytics.last_prediction_id(channel_id, &event.id)?;
-                    analytics.insert_points(
-                        channel_id,
-                        points_value as i32,
-                        PointsInfo::Prediction(event.id.clone(), entry_id),
-                    )?;
                     analytics.end_prediction(
                         &event.id,
                         channel_id,
@@ -678,7 +697,7 @@ mod watch_stream {
             .iter()
             .filter(|x| streamers.iter().any(|y| y.1.info.channel_name.eq(x.0)))
         {
-            if !watch_priority.contains(&item.0) {
+            if !watch_priority.contains(item.0) {
                 watch_items.push(
                     streamers
                         .iter()

@@ -120,8 +120,7 @@ impl WsPool {
                     let topic_already_exists = self
                         .connections
                         .iter()
-                        .map(|x| x.topics.clone())
-                        .flatten()
+                        .flat_map(|x| x.topics.clone())
                         .find(|x| x.0.eq(&topic));
                     if topic_already_exists.is_none() {
                         self.listen_command(topic).await
