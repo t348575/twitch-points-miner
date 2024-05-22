@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use clap::Parser;
+use common::twitch::api;
 use common::twitch::ws::{Request, WsPool};
 use eyre::{eyre, Context, Result};
 use tokio::sync::RwLock;
@@ -46,8 +47,6 @@ struct Args {
     #[arg(long, default_value_t = String::from("analytics.db"))]
     analytics_db: String,
 }
-
-const BASE_URL: &str = "https://twitch.tv";
 
 fn get_layer<S>(
     layer: tracing_subscriber::fmt::Layer<S>,
@@ -233,10 +232,14 @@ async fn main() -> Result<()> {
         args.simulate,
         user_info,
         gql.clone(),
-        BASE_URL,
         ws_tx,
         Arc::new(AnalyticsWrapper::new(analytics)),
         analytics_tx,
+        api::get_spade_info(
+            #[cfg(test)]
+            "",
+        )
+        .await?,
     )?));
 
     let pubsub = spawn(pubsub::PubSub::run(ws_rx, pubsub_data.clone(), gql));

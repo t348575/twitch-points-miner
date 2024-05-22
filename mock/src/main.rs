@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
 
 use axum::{
     extract::{
@@ -11,14 +11,14 @@ use axum::{
 };
 use base64::{engine::general_purpose::URL_SAFE, Engine};
 use common::twitch::{
-    api::SetViewership,
     gql::{self, GqlRequest, Variables},
     traverse_json,
 };
 use eyre::Result;
 use http::StatusCode;
 use serde::Deserialize;
-use tokio::{signal, sync::Mutex};
+use serde_json::json;
+use tokio::{signal, spawn, sync::Mutex, time::sleep};
 use tower_http::trace::TraceLayer;
 use tracing::{debug, trace, warn};
 use tracing_subscriber::EnvFilter;
@@ -67,8 +67,8 @@ async fn main() -> Result<()> {
         .route("/gql", post(gql_handler))
         .route("/streamer_metadata", post(set_streamer_metadata))
         .route(
-            "/base/:streamer",
-            get(|| async { "config/settings.12345.js" }),
+            "/manifest.json",
+            get(|| async { Json(json!({"channels": [{"releases": [ { "buildId": "e2c732bb-0b5f-4f0a-aecd-dbbe9a06b94a" } ]}]})) }),
         )
         .route(
             "/base/config/settings.12345.js",
@@ -81,7 +81,11 @@ async fn main() -> Result<()> {
         .layer(TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    println!("ready");
+
+    spawn(async {
+        sleep(Duration::from_millis(100)).await;
+        println!("ready");
+    });
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
@@ -182,12 +186,13 @@ async fn spade_handler(
     Form(data): Form<SpadeData>,
 ) -> StatusCode {
     let body = String::from_utf8(URL_SAFE.decode(&data.data).unwrap()).unwrap();
-    let payload: Vec<SetViewership> = serde_json::from_str(&body).unwrap();
+    let mut payload: serde_json::Value = serde_json::from_str(&body).unwrap();
     let mut state = state.lock().await;
-    if !state.watching.contains(&payload[0].properties.channel_id) {
-        state
-            .watching
-            .push(payload[0].properties.channel_id.clone());
+
+    let channel_id = traverse_json(&mut payload, "[0].properties.channel_id").unwrap();
+    let channel_id = UserId::from_str(channel_id.as_str().unwrap()).unwrap();
+    if !state.watching.contains(&channel_id) {
+        state.watching.push(channel_id);
         return StatusCode::ACCEPTED;
     }
     StatusCode::CREATED

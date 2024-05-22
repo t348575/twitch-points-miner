@@ -9,7 +9,11 @@ use std::{
 use common::{
     config::{filters::filter_matches, *},
     remove_duplicates_in_place,
-    twitch::{api, gql, ws::Request},
+    twitch::{
+        api::{self, SpadeInfo},
+        gql,
+        ws::Request,
+    },
     types::*,
 };
 use eyre::{eyre, Context, ContextCompat, Result};
@@ -45,14 +49,12 @@ pub struct PubSub {
     pub streamers: HashMap<UserId, StreamerState>,
     pub simulate: bool,
     #[serde(skip)]
-    spade_url: Option<String>,
+    spade_info: SpadeInfo,
     pub user_id: String,
     pub user_name: String,
     pub configs: HashMap<String, StreamerConfigRefWrapper>,
     #[serde(skip)]
     pub gql: gql::Client,
-    #[serde(skip)]
-    pub base_url: String,
     #[serde(skip)]
     pub ws_tx: Sender<Request>,
     #[serde(skip)]
@@ -73,10 +75,10 @@ impl PubSub {
         simulate: bool,
         user_info: (String, String),
         gql: gql::Client,
-        base_url: &str,
         ws_tx: Sender<Request>,
         analytics: Arc<crate::analytics::AnalyticsWrapper>,
         analytics_tx: Sender<crate::analytics::Request>,
+        spade_info: SpadeInfo,
     ) -> Result<PubSub> {
         let mut configs = channels
             .iter()
@@ -132,7 +134,7 @@ impl PubSub {
             config_path,
             streamers,
             simulate,
-            spade_url: None,
+            spade_info,
             user_id: user_info.0,
             user_name: user_info.1,
             configs,
@@ -140,7 +142,6 @@ impl PubSub {
             analytics,
             analytics_tx,
             gql,
-            base_url: base_url.to_string(),
             watching: Vec::new(),
         })
     }
@@ -157,12 +158,11 @@ impl PubSub {
             config_path: Default::default(),
             streamers: Default::default(),
             simulate: Default::default(),
-            spade_url: Default::default(),
+            spade_info: Default::default(),
             user_id: Default::default(),
             user_name: Default::default(),
             configs: Default::default(),
             gql: Default::default(),
-            base_url: Default::default(),
             ws_tx,
             watching: Default::default(),
         }
@@ -673,12 +673,13 @@ mod watch_stream {
                 streamers,
                 reader.user_id.parse()?,
                 reader.user_name.clone(),
-                reader.spade_url.clone().ok_or(eyre!("Spade URL not set"))?,
+                reader.spade_info.clone(),
                 reader.config.clone(),
             )
         };
 
         if streamers.is_empty() {
+            pubsub.write().await.watching.clear();
             trace!("No streamer found");
             return Ok(());
         }
@@ -853,28 +854,26 @@ mod update_and_claim_points {
 mod update_spade_url {
     use super::*;
 
-    async fn inner(pubsub: &Arc<RwLock<PubSub>>, base_url: &str) -> Result<()> {
-        let a_live_stream = {
-            let reader = pubsub.read().await;
-            reader
-                .streamers
-                .iter()
-                .find(|x| x.1.info.live)
-                .map(|x| (x.0.clone(), x.1.clone()))
-        };
-
-        if let Some((_, streamer)) = a_live_stream {
-            let spade_url = api::get_spade_url(&streamer.info.channel_name, base_url).await?;
-            pubsub.write().await.spade_url = Some(spade_url);
-            debug!("Updated spade url");
-        }
+    async fn inner(pubsub: &Arc<RwLock<PubSub>>, #[cfg(test)] base_url: &str) -> Result<()> {
+        let spade_info = api::get_spade_info(
+            #[cfg(test)]
+            base_url,
+        )
+        .await?;
+        trace!("Updated spade info {spade_info:?}");
+        pubsub.write().await.spade_info = spade_info;
         Ok(())
     }
 
     pub async fn run(pubsub: Arc<RwLock<PubSub>>) {
-        let base_url = { pubsub.read().await.base_url.clone() };
         loop {
-            if let Err(err) = inner(&pubsub, &base_url).await {
+            if let Err(err) = inner(
+                &pubsub,
+                #[cfg(test)]
+                "",
+            )
+            .await
+            {
                 error!("update_and_claim_points {err}");
             }
 
@@ -905,6 +904,7 @@ mod test {
     use common::{
         config::{strategy::*, ConfigType, PredictionConfig, StreamerConfig},
         testing::{container, TestContainer},
+        twitch::api::SpadeInfo,
         types::*,
     };
 
@@ -1134,7 +1134,10 @@ mod test {
         let (ws_tx, _) = unbounded();
         let (_, rx) = unbounded();
         let mut pubsub = PubSub::empty(ws_tx);
-        pubsub.spade_url = Some(format!("http://localhost:{}/spade", container.port));
+        pubsub.spade_info = SpadeInfo {
+            url: format!("http://localhost:{}/spade", container.port),
+            app_version: "".to_owned(),
+        };
         pubsub.user_id = "1".to_string();
 
         let user_ids = vec![UserId::from_static("1"), UserId::from_static("2")];
@@ -1178,7 +1181,10 @@ mod test {
         let (ws_tx, _) = unbounded();
         let (tx, rx) = unbounded();
         let mut pubsub = PubSub::empty(ws_tx);
-        pubsub.spade_url = Some(format!("http://localhost:{}/spade", container.port));
+        pubsub.spade_info = SpadeInfo {
+            url: format!("http://localhost:{}/spade", container.port),
+            app_version: "".to_owned()
+        };
         pubsub.user_id = "1".to_string();
         pubsub.config.watch_streak = Some(true);
 
