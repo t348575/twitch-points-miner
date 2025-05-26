@@ -1,9 +1,14 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose::URL_SAFE, Engine};
-use eyre::{eyre, Context, ContextCompat, Result};
+use eyre::{bail, eyre, Context, ContextCompat, Result};
 use serde_json::json;
-use twitch_api::types::UserId;
+use twitch_api::{
+    eventsub::{stream::StreamOnlineV1, Status, Transport},
+    twitch_oauth2::{AccessToken, UserToken},
+    types::UserId,
+    HelixClient,
+};
 
 use crate::{twitch::DEVICE_ID, types::StreamerInfo};
 
@@ -104,7 +109,8 @@ pub async fn set_viewership(
             "distinct_id": CLIENT_ID,
             "client_app": "twilight"
         }
-    })]).context("Building body")?;
+    })])
+    .context("Building body")?;
 
     let client = reqwest::Client::new();
     let res = client
@@ -114,11 +120,44 @@ pub async fn set_viewership(
         .header("X-Device-Id", DEVICE_ID)
         .form(&[("data", &URL_SAFE.encode(body))])
         .send()
-        .await.context("Sending request")?;
+        .await
+        .context("Sending request")?;
 
     if !res.status().is_success() {
-        return Err(eyre!("Failed to set viewership {}. Response: {}", res.status(), res.text().await?));
+        return Err(eyre!(
+            "Failed to set viewership {}. Response: {}",
+            res.status(),
+            res.text().await?
+        ));
     }
 
     Ok(())
+}
+
+pub struct Helix<'a> {
+    client: HelixClient<'a, reqwest::Client>,
+    token: UserToken,
+}
+
+impl<'a> Helix<'a> {
+    pub async fn new(access_token: &str) -> Result<Helix> {
+        let client: HelixClient<reqwest::Client> = HelixClient::default();
+        let token = UserToken::from_token(&client, AccessToken::from(access_token)).await?;
+        Ok(Helix { client, token })
+    }
+
+    pub async fn streamer_online(&self, user_id: UserId, session_id: &str) -> Result<()> {
+        let res = self
+            .client
+            .create_eventsub_subscription(
+                StreamOnlineV1::broadcaster_user_id(user_id),
+                Transport::websocket(session_id),
+                &self.token,
+            )
+            .await?;
+        if res.status != Status::Enabled {
+            bail!("Could not create subscription: {res:#?}")
+        }
+        Ok(())
+    }
 }

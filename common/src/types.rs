@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use serde::{Deserialize, Serialize, Serializer};
-use twitch_api::{pubsub::predictions::Event, types::UserId};
+use twitch_api::{eventsub::channel::ChannelPredictionProgressV1Payload, types::UserId};
 
 use crate::config::StreamerConfig;
 
@@ -9,7 +9,7 @@ use crate::config::StreamerConfig;
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct StreamerState {
     pub info: StreamerInfo,
-    pub predictions: HashMap<String, (Event, bool)>,
+    pub predictions: HashMap<String, (ChannelPredictionProgressV1Payload, bool)>,
     pub config: StreamerConfigRefWrapper,
     pub points: u32,
     #[serde(skip)]
@@ -44,6 +44,7 @@ impl StreamerState {
 #[derive(Debug, Default, Clone, Serialize)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct StreamerConfigRef {
+    #[serde(rename = "type")]
     pub _type: ConfigTypeRef,
     pub config: StreamerConfig,
 }
@@ -62,22 +63,24 @@ impl Serialize for StreamerConfigRefWrapper {
 }
 
 #[cfg(feature = "web_api")]
-impl<'__s> utoipa::ToSchema<'__s> for StreamerConfigRefWrapper {
-    fn aliases() -> Vec<(&'__s str, utoipa::openapi::schema::Schema)> {
-        let s = if let utoipa::openapi::RefOr::T(x) = StreamerConfigRef::schema().1 {
-            x
-        } else {
-            panic!("Expected type, got ref")
-        };
-
-        vec![("StreamerConfigRefWrapper", s)]
-    }
-
-    fn schema() -> (
-        &'__s str,
-        utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
-    ) {
+impl utoipa::PartialSchema for StreamerConfigRefWrapper {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
         StreamerConfigRef::schema()
+    }
+}
+
+#[cfg(feature = "web_api")]
+impl utoipa::ToSchema for StreamerConfigRefWrapper {
+    fn schemas(
+        schemas: &mut Vec<(
+            String,
+            utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
+        )>,
+    ) {
+        schemas.push((
+            "StreamerConfigRefWrapper".to_owned(),
+            <StreamerConfigRef as utoipa::PartialSchema>::schema(),
+        ));
     }
 }
 

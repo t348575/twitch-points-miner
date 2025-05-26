@@ -5,12 +5,15 @@ use axum::{
     Json, Router,
 };
 use common::config::{Config, ConfigType, Normalize, StreamerConfig};
+use eyre::Context;
 use http::StatusCode;
 use indexmap::IndexMap;
 use serde::Deserialize;
 use thiserror::Error;
+use tokio::fs::read_to_string;
 use twitch_api::types::UserId;
 use utoipa::ToSchema;
+use validator::ValidateArgs;
 
 use crate::{make_paths, pubsub::PubSub, sub_error};
 
@@ -27,6 +30,7 @@ pub fn build(state: ApiState) -> RouterBuild {
         .route("/streamer/:name", post(update_streamer_config))
         .route("/watch_priority", get(get_watch_priority))
         .route("/watch_priority/", post(update_watch_priority))
+        .route("/external-file/:file", get(get_external_file))
         .with_state(state);
 
     let schemas = vec![AddUpdatePreset::schema()];
@@ -37,7 +41,8 @@ pub fn build(state: ApiState) -> RouterBuild {
         __path_remove_preset,
         __path_get_watch_priority,
         __path_update_watch_priority,
-        __path_update_streamer_config
+        __path_update_streamer_config,
+        __path_get_external_file
     );
 
     (routes, schemas, paths)
@@ -115,12 +120,13 @@ async fn add_update_preset(
     State(data): State<ApiState>,
     Json(preset): Json<AddUpdatePreset>,
 ) -> Result<(), ApiError> {
+    let mut writer = data.write().await;
     preset
         .config
-        .validate()
+        .prediction
+        .validate_with_args(&writer.js_dir)
         .map_err(|err| ApiError::SubError(Box::new(ConfigError::InvalidConfig(err.to_string()))))?;
 
-    let mut writer = data.write().await;
     if writer.get_by_name(&preset.name).is_some() {
         return sub_error!(ConfigError::PresetConfigNameEqualsStreamerName);
     }
@@ -278,7 +284,7 @@ impl PubSub {
                 default
                     .streamers
                     .insert(channel_name.to_owned(), ConfigType::Specific(s.clone()));
-                if let Err(err) = default.parse_and_validate() {
+                if let Err(err) = default.parse_and_validate(&self.js_dir) {
                     return sub_error!(ConfigError::InvalidConfig(err.to_string()));
                 }
 
@@ -299,4 +305,22 @@ impl PubSub {
             }
         }
     }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/config/external-file/{file}",
+    responses(
+        (status = 200, description = "Successfully retrieved external file", body = String),
+    ),
+    params(
+        ("file" = String, Path, description = "Name of the file to retrieve")
+    )
+)]
+async fn get_external_file(
+    State(data): State<ApiState>,
+    Path(file): Path<String>,
+) -> Result<String, ApiError> {
+    let file_path = data.read().await.js_dir.join(file);
+    Ok(read_to_string(file_path).await.context("Reading file")?)
 }

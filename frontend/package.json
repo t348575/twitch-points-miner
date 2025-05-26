@@ -1,7 +1,7 @@
 {
   "name": "frontend",
   "private": true,
-  "version": "0.1.11",
+  "version": "0.1.12",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -27,18 +27,25 @@
     "vite": "^5.2.0"
   },
   "dependencies": {
+    "@codemirror/lang-javascript": "^6.2.2",
+    "@felte/reporter-svelte": "^1.1.11",
+    "@felte/validator-zod": "^1.0.17",
     "@internationalized/date": "^3.5.2",
+    "@uiw/codemirror-theme-github": "^4.22.1",
     "@unovis/svelte": "^1.4.0",
     "@unovis/ts": "^1.4.0",
-    "bits-ui": "^0.21.7",
+    "bits-ui": "^0.21.10",
     "clsx": "^2.1.0",
+    "felte": "^1.2.14",
     "lucide-svelte": "^0.366.0",
     "mode-watcher": "^0.3.0",
     "openapi-fetch": "^0.9.3",
+    "svelte-codemirror-editor": "^1.4.0",
     "svelte-sonner": "^0.3.22",
     "svelte-spa-router": "^4.0.1",
     "tailwind-merge": "^2.2.2",
     "tailwind-variants": "^0.2.1",
-    "vaul-svelte": "^0.3.0"
+    "vaul-svelte": "^0.3.0",
+    "zod": "^3.23.8"
   }
 }

@@ -8,6 +8,8 @@ export default defineConfig({
   resolve: {
     alias: {
       $lib: path.resolve("./src/lib"),
+      $common: path.resolve("./src/common.ts"),
+      $ui: path.resolve("./src/lib/components/ui")
     },
   },
 })

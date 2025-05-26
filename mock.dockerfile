@@ -1,4 +1,5 @@
-FROM t348575/muslrust-chef:1.78.0-stable as chef
+FROM t348575/rust-chef:1-stable as chef
+RUN apt install pkg-config libglib2.0-dev -y
 WORKDIR /tpm
 
 FROM chef as planner
@@ -16,10 +17,10 @@ ADD mock mock
 ADD common common
 COPY ["Cargo.toml", "Cargo.lock", "."]
 RUN perl -0777 -i -pe 's/members = \[[^\]]+\]/members = ["mock", "common"]/igs' Cargo.toml
-RUN RUSTFLAGS="$RUSTFLAGS" cargo build --target x86_64-unknown-linux-musl
+RUN RUSTFLAGS="$RUSTFLAGS" cargo build --target x86_64-unknown-linux-gnu
 
-FROM busybox AS runtime
+FROM ubuntu AS runtime
 WORKDIR /
-COPY --from=builder /tpm/target/x86_64-unknown-linux-musl/debug/mock /app
+COPY --from=builder /tpm/target/x86_64-unknown-linux-gnu/debug/mock /app
 EXPOSE 3000
 ENTRYPOINT ["/app"]

@@ -9,7 +9,7 @@ use axum::{
     Json, Router,
 };
 use common::{
-    config::{filters::Filter, strategy::*, PredictionConfig, StreamerConfig},
+    config::{filters::Filter, strategy::*, *},
     twitch::auth::Token,
     types::*,
 };
@@ -88,7 +88,7 @@ pub async fn get_api_server(
         components(
             schemas(
                 PubSub, StreamerState, StreamerConfigRefWrapper, ConfigTypeRef, StreamerConfig, PredictionConfig, StreamerInfo, Event,
-                Filter, Strategy, UserId, Game, Detailed, Timestamp, DefaultPrediction, DetailedOdds, Points, OddsComparisonType, LogQuery
+                Filter, Strategy, UserId, Game, Detailed, Timestamp, DefaultPrediction, DetailedOdds, Points, OddsComparisonType, LogQuery, External, ExternalType
             ),
         ),
         tags(

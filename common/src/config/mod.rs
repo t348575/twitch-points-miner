@@ -1,7 +1,15 @@
+use std::path::PathBuf;
+
 use eyre::{eyre, Result};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use validator::Validate;
+use twitch_api::{
+    eventsub::channel::ChannelPredictionProgressV1Payload,
+    types::{DisplayName, Nickname, PredictionId, PredictionOutcome, Timestamp, UserId},
+};
+use validator::{Validate, ValidateArgs, ValidationError, ValidationErrors};
+
+use crate::{execute_js, types::StreamerState};
 
 use self::{filters::Filter, strategy::Strategy};
 
@@ -20,28 +28,41 @@ pub trait Normalize {
     fn normalize(&mut self);
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, Validate)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct StreamerConfig {
     pub follow_raid: bool,
-    #[validate(nested)]
     pub prediction: PredictionConfig,
 }
 
-impl StreamerConfig {
-    pub fn validate(&self) -> Result<()> {
-        Ok(self.prediction.validate()?)
-    }
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
+pub struct PredictionConfig {
+    pub strategy: Strategy,
+    pub filters: Vec<Filter>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, Validate)]
-#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
-#[validate(nested)]
-pub struct PredictionConfig {
-    #[validate(nested)]
-    pub strategy: Strategy,
-    #[validate(length(min = 0))]
-    pub filters: Vec<Filter>,
+impl<'v_a> ValidateArgs<'v_a> for PredictionConfig {
+    type Args = &'v_a PathBuf;
+    fn validate_with_args(&self, args: Self::Args) -> Result<(), ValidationErrors> {
+        use validator::ValidateLength;
+        let mut errors = ValidationErrors::new();
+
+        errors.merge_self("strategy", validate_strategy(&self.strategy, args));
+        if !self.filters.validate_length(Some(0), None, None) {
+            let mut err = ValidationError::new("length");
+            err.add_param("min".into(), &0);
+            err.add_param("value".into(), &self.filters);
+            errors.add("filters", err);
+        }
+        errors.merge_self("filters", validate_filters(&self.filters, args));
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,8 +73,8 @@ pub enum ConfigType {
 }
 
 impl Config {
-    pub fn parse_and_validate(&mut self) -> Result<()> {
-        for (_, c) in &mut self.streamers {
+    pub fn parse_and_validate(&mut self, js_dir: &PathBuf) -> Result<()> {
+        for (streamer, c) in &mut self.streamers {
             match c {
                 ConfigType::Preset(s_name) => {
                     if self.presets.is_none() {
@@ -66,10 +87,16 @@ impl Config {
                     if s.is_none() {
                         return Err(eyre!("Preset strategy {s_name} not found"));
                     }
-                    s.unwrap().validate()?;
+                    if let Err(err) = s.unwrap().prediction.validate_with_args(js_dir) {
+                        println!("Config for preset {s_name} failed validation:");
+                        Err(err)?;
+                    }
                 }
                 ConfigType::Specific(s) => {
-                    s.validate()?;
+                    if let Err(err) = s.prediction.validate_with_args(js_dir) {
+                        println!("Config for streamer {streamer} failed validation:");
+                        Err(err)?;
+                    }
                     s.prediction.strategy.normalize();
                 }
             }
@@ -86,4 +113,134 @@ impl Config {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
+#[validate(context = "ExternalContext<'v_a>")]
+#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
+pub struct External {
+    #[serde(rename = "type")]
+    pub _type: ExternalType,
+    #[validate(custom(function = "validate_external", use_context), length(min = 1))]
+    pub data: String,
+}
+
+impl External {
+    pub fn attach_dir(&mut self, js_dir: &PathBuf) {
+        if self._type == ExternalType::File {
+            self.data = js_dir.join(&self.data).to_str().unwrap().to_owned();
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
+pub enum ExternalType {
+    #[default]
+    Inline,
+    File,
+}
+
+pub struct ExternalContext<'a> {
+    _type: &'a ExternalType,
+    js_dir: &'a PathBuf,
+}
+
+fn validate_external(value: &String, context: &ExternalContext) -> Result<(), ValidationError> {
+    use validator::ValidateLength;
+    match context._type {
+        ExternalType::Inline => validate_js(External {
+            _type: context._type.to_owned(),
+            data: value.clone(),
+        }),
+        ExternalType::File => {
+            let real_path = context.js_dir.join(value);
+            if !std::path::Path::new(&real_path).exists() {
+                let mut err = ValidationError::new("invalid-path");
+                err.add_param("value".into(), &value);
+                return Err(err);
+            }
+
+            let js = std::fs::read_to_string(&real_path)
+                .map_err(|err| {
+                    let mut e = ValidationError::new("read-error");
+                    e.add_param("value".into(), &value);
+                    e.with_message(err.to_string().into())
+                })?
+                .trim()
+                .to_owned();
+
+            if !js.validate_length(Some(1), None, None) {
+                let mut err = ValidationError::new("length");
+                err.add_param("min".into(), &0);
+                err.add_param("value".into(), &value);
+                return Err(err);
+            }
+
+            // safe to unwrap since this was checked earlier
+            validate_js(External {
+                _type: context._type.to_owned(),
+                data: real_path.to_str().unwrap().to_string(),
+            })
+        }
+    }
+}
+
+fn validate_js(external: External) -> Result<(), ValidationError> {
+    execute_js(
+        &StreamerState::default(),
+        &ChannelPredictionProgressV1Payload {
+            broadcaster_user_id: UserId::from_static("1"),
+            broadcaster_user_login: Nickname::from_static("2"),
+            broadcaster_user_name: DisplayName::from_static("3"),
+            locks_at: Timestamp::now(),
+            started_at: Timestamp::now(),
+            id: PredictionId::from_static("1"),
+            outcomes: vec![
+                PredictionOutcome {
+                    id: "1".to_owned(),
+                    title: "a".to_owned(),
+                    channel_points: Some(0),
+                    users: Some(0),
+                    top_predictors: None,
+                    color: "PINK".to_owned(),
+                },
+                PredictionOutcome {
+                    id: "2".to_owned(),
+                    title: "b".to_owned(),
+                    channel_points: Some(0),
+                    users: Some(0),
+                    top_predictors: None,
+                    color: "BLUE".to_owned(),
+                },
+            ],
+            title: "test".to_owned(),
+        },
+        external,
+    )
+    .map_err(|base_err| {
+        let mut err = ValidationError::new("js");
+        err.add_param(
+            "js-test-error".into(),
+            &"Failed to test validity of js script",
+        );
+        err.with_message(base_err.to_string().into())
+    })
+}
+
+fn validate_strategy(value: &Strategy, js_dir: &PathBuf) -> Result<(), ValidationErrors> {
+    match value {
+        Strategy::Detailed(t) => t.validate(),
+        Strategy::External(t) => t.validate_with_args(&ExternalContext {
+            _type: &t._type,
+            js_dir,
+        }),
+    }
+}
+
+fn validate_filters(value: &Vec<Filter>, js_dir: &PathBuf) -> Result<(), ValidationErrors> {
+    for f in value {
+        f.validate_with_args(js_dir)?;
+    }
+    Ok(())
 }

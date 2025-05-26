@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::Parser;
@@ -21,7 +21,6 @@ use twitch_api::pubsub::{
 use crate::analytics::{Analytics, AnalyticsWrapper};
 
 mod analytics;
-// mod live;
 mod pubsub;
 mod web_api;
 
@@ -46,6 +45,9 @@ struct Args {
     /// Analytics database path
     #[arg(long, default_value_t = String::from("analytics.db"))]
     analytics_db: String,
+    /// External JS files directory
+    #[arg(long, default_value_t = String::from("/js"))]
+    js_dir: String,
 }
 
 fn get_layer<S>(
@@ -106,7 +108,7 @@ async fn main() -> Result<()> {
     }
 
     let c_original = c.clone();
-    c.parse_and_validate()?;
+    c.parse_and_validate(&PathBuf::from(&args.js_dir))?;
 
     for item in c.watch_priority.clone().unwrap_or_default() {
         if !c.streamers.contains_key(&item) {
@@ -230,6 +232,7 @@ async fn main() -> Result<()> {
         active_predictions,
         c.presets.unwrap_or_default(),
         args.simulate,
+        PathBuf::from(args.js_dir),
         user_info,
         gql.clone(),
         ws_tx,

@@ -1,3 +1,8 @@
+import * as z from "zod";
+import DetailedStrategy from "./DetailedStrategy.svelte";
+import External from "./External.svelte";
+import { typedObjectKeys } from "$common";
+
 export function validate_detailed_strategy(obj: any): string | undefined {
   for (const v of Object.keys(obj)) {
     // points object
@@ -60,7 +65,43 @@ export function detailed_strategy_stringify(obj: any): any {
   );
 }
 
-export const DETAILED_STRATEGY_ODDS_COMPARISON_TYPES = [
-  { value: "Le", label: "<= LE" },
-  { value: "Ge", label: ">= GE" },
-];
+export const DETAILED_STRATEGY_ODDS_COMPARISON_TYPES = {
+  Le: "<= LE",
+  Ge: ">= GE",
+};
+
+const points_schema = z.object({
+  max_value: z.number().min(0),
+  percent: z.number().min(0).max(100),
+});
+
+const [dsFirstType, ...dsOtherTypes] = typedObjectKeys(
+  DETAILED_STRATEGY_ODDS_COMPARISON_TYPES,
+);
+export const dsSchema = z.object({
+  default: z.object({
+    max_percentage: z.number().min(0).max(100),
+    min_percentage: z.number().min(0).max(100),
+    points: points_schema,
+  }),
+  detailed: z.object({
+    type: z.enum([dsFirstType!, ...dsOtherTypes]),
+    attempt_rate: z.number().min(0).max(100),
+    points: points_schema,
+    threshold: z.number().min(0).max(100),
+  }).array(),
+});
+
+export const externalSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("Inline"),
+    data: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal("File"),
+    data: z.string().min(1),
+    file_data: z.string().optional(),
+  }),
+]);
+
+export { DetailedStrategy, External };

@@ -126,6 +126,7 @@ async fn make_prediction(
     if !event.outcomes.iter().any(|o| o.id == payload.outcome_id) {
         return sub_error!(PredictionError::OutcomeNotFound);
     }
+    let js_dir = state.js_dir.clone();
     drop(state);
 
     let update_placed_state = |mut state: RwLockWriteGuard<PubSub>| {
@@ -154,12 +155,12 @@ async fn make_prediction(
         update_placed_state(data.write().await);
         Ok(StatusCode::CREATED)
     } else {
-        match prediction_logic(&s, &payload.event_id) {
-            Ok(Some((o, p))) => {
+        match prediction_logic(&s, &payload.event_id, &js_dir) {
+            Ok(Some(bet)) => {
                 place_bet(
                     payload.event_id.clone(),
-                    o,
-                    p,
+                    bet.outcome_id,
+                    bet.points,
                     simulate,
                     &streamer,
                     &gql,

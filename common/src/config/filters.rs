@@ -1,9 +1,11 @@
-use chrono::{DateTime, Local};
-use eyre::Result;
-use serde::{Deserialize, Serialize};
-use twitch_api::pubsub::predictions::Event;
+use std::path::PathBuf;
 
-use crate::types::StreamerState;
+use serde::{Deserialize, Serialize};
+use validator::{ValidateArgs, ValidateRange, ValidationError, ValidationErrors};
+
+use crate::config::ExternalContext;
+
+use super::External;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
@@ -11,24 +13,53 @@ pub enum Filter {
     TotalUsers(u32),
     DelaySeconds(u32),
     DelayPercentage(f64),
+    External(External),
 }
 
-pub fn filter_matches(prediction: &Event, filter: &Filter, _: &StreamerState) -> Result<bool> {
-    let res = match filter {
-        Filter::TotalUsers(t) => {
-            prediction.outcomes.iter().fold(0, |a, b| a + b.total_users) as u32 >= *t
+impl Filter {
+    pub fn validate_with_args(&self, js_dir: &PathBuf) -> Result<(), ValidationErrors> {
+        let mut errors = ValidationErrors::new();
+
+        use ValidateRange;
+        match self {
+            Filter::TotalUsers(t) => {
+                if !t.validate_range(Some(0), None, None, None) {
+                    let mut err = ValidationError::new("range");
+                    err.add_param("min".into(), &0);
+                    err.add_param("value".into(), &t);
+                    errors.add("TotalUsers", err);
+                }
+            }
+            Filter::DelaySeconds(t) => {
+                if !t.validate_range(Some(0), None, None, None) {
+                    let mut err = ValidationError::new("range");
+                    err.add_param("min".into(), &0);
+                    err.add_param("value".into(), &t);
+                    errors.add("DelaySeconds", err);
+                }
+            }
+            Filter::DelayPercentage(t) => {
+                if !t.validate_range(Some(0.0), None, None, None) {
+                    let mut err = ValidationError::new("range");
+                    err.add_param("min".into(), &0);
+                    err.add_param("value".into(), &t);
+                    errors.add("DelayPercentage", err);
+                }
+            }
+            Filter::External(js) => ValidationErrors::merge(
+                Ok(()),
+                "External",
+                js.validate_with_args(&ExternalContext {
+                    _type: &js._type,
+                    js_dir,
+                }),
+            )?,
         }
-        Filter::DelaySeconds(d) => {
-            let created_at: DateTime<Local> =
-                DateTime::parse_from_rfc3339(prediction.created_at.as_str())?.into();
-            (chrono::Local::now() - created_at).num_seconds() as u32 >= *d
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
         }
-        Filter::DelayPercentage(d) => {
-            let created_at: DateTime<Local> =
-                DateTime::parse_from_rfc3339(prediction.created_at.as_str())?.into();
-            let d = prediction.prediction_window_seconds as f64 * (d / 100.0);
-            (chrono::Local::now() - created_at).num_seconds() as f64 >= d
-        }
-    };
-    Ok(res)
+    }
 }

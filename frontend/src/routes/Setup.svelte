@@ -30,9 +30,10 @@
     add_or_update_preset,
     delete_preset,
     get_watching,
+    type PresetList,
   } from "../common";
   import { ArrowUpDown, SlidersHorizontal, X } from "lucide-svelte";
-  import Config from "../lib/components/ui/Config.svelte";
+  import { Config } from "$lib/components/ui/config";
   import type { components } from "../api";
   import WatchPriority from "../lib/components/ui/WatchPriority.svelte";
   import { ScrollArea } from "$lib/components/ui/scroll-area";
@@ -70,6 +71,19 @@
     table.column({
       accessor: ({ data }) => data.info.live,
       header: "Live",
+      plugins: {
+        sort: {
+          compareFn: (a, b) => {
+            if (a && !b) {
+              return -1;
+            }
+            if (!a && b) {
+              return 1;
+            }
+            return 0;
+          },
+        },
+      },
     }),
   ]);
 
@@ -91,19 +105,12 @@
   let add_streamer_alert = false;
   let error_message = "";
   let filters: FilterType[] = [];
-  let strategy = {
-    value: "",
-    label: "",
-  };
+  let strategy;
   let view_edit = false;
   let config_component: Config;
   const BLANK_PRESET = { value: undefined, label: undefined, data: undefined };
   let preset = BLANK_PRESET;
-  let preset_list: {
-    value: string;
-    label: string;
-    data: components["schemas"]["StreamerConfig"];
-  }[] = [];
+  let preset_list: PresetList = {};
 
   let add_watch_priority = false;
   let remove_watch_priority = false;
@@ -120,12 +127,12 @@
     add_streamer_alert = false;
     channel_name = "";
     filters = [];
-    strategy = { label: "", value: "" };
+    strategy = undefined;
   }
 
   $: if (!preset_dialog) {
     filters = [];
-    strategy = { label: "", value: "" };
+    strategy = undefined;
     preset = BLANK_PRESET;
   }
 
@@ -136,13 +143,13 @@
   }
 
   $: if (preset_dialog && view_edit && config_component != undefined) {
-    const item = preset_list.find((a) => a.value == preset.value);
+    const item = preset_list[preset.value!];
     if (item != undefined) {
       let entry = JSON.parse(JSON.stringify(item));
       config_component.set_filters_strategy({
-        _type: "Specific",
+        type: "Specific",
         config: {
-          ...entry.data
+          ...entry.data,
         },
       });
     }
@@ -212,13 +219,10 @@
   }
 
   async function load_presets() {
-    preset_list = [];
     const res = await get_presets();
     for (const v in res) {
-      // @ts-ignore
-      preset_list.push({ value: v, label: v, data: res[v] });
+      preset_list[v] = { label: v, data: res[v]! };
     }
-    preset_list = preset_list;
   }
 
   async function view_edit_preset() {
@@ -238,7 +242,7 @@
   }
 
   async function save_preset() {
-    let config = config_component.get_config();
+    let config = await config_component.get_config();
     if (config === undefined) {
       return;
     }
@@ -250,6 +254,7 @@
       name = preset_name;
     }
     try {
+      console.log(config.Specific)
       await add_or_update_preset(name, config.Specific);
     } catch (err) {
       toast(`Failed to save preset: ${err}`);
@@ -278,9 +283,9 @@
   }
 
   async function add_streamer_button() {
+    await load_presets();
     view_edit = false;
     config_dialog = true;
-    await load_presets();
   }
 </script>
 
@@ -347,7 +352,9 @@
         </Card.Header>
         <Card.Content>
           {#each watching as w}
-            <a href={`https://twitch.tv/${w.info.channelName}`} target="_blank">{w.info.channelName}</a>
+            <a href={`https://twitch.tv/${w.info.channelName}`} target="_blank"
+              >{w.info.channelName}</a
+            >
             <br />
           {/each}
         </Card.Content>
@@ -366,8 +373,11 @@
                     props={cell.props()}
                     let:props
                   >
-                    <Table.Head {...attrs} class="[&:has([role=checkbox])]:pl-3">
-                      {#if cell.id === "Points"}
+                    <Table.Head
+                      {...attrs}
+                      class="[&:has([role=checkbox])]:pl-3"
+                    >
+                      {#if cell.id === "Points" || cell.id === "Live"}
                         <Button variant="ghost" on:click={props.sort.toggle}>
                           <Render of={cell.render()} />
                           <ArrowUpDown class={"ml-2 h-4 w-4"} />
@@ -411,7 +421,7 @@
   </div>
 
   <Dialog.Root bind:open={config_dialog}>
-    <Dialog.Content class="lg:!min-w-[50%] md:!min-w-[100%] mt-2 !max-h-[98%]">
+    <Dialog.Content class="lg:!min-w-[50%] md:!min-w-[100%] mt-2">
       <Dialog.Header>
         <Dialog.Title class="mb-4">
           {#if view_edit}
@@ -421,87 +431,90 @@
           {/if}
         </Dialog.Title>
       </Dialog.Header>
-      <div class="flex flex-col items-center">
-        {#if !view_edit}
-          {#if add_streamer_alert}
-            <ErrorAlert message={error_message} />
+      <ScrollArea class="!max-h-[85vh] !min-h-[10vh] w-full">
+        <div class="flex flex-col items-center">
+          {#if !view_edit}
+            {#if add_streamer_alert}
+              <ErrorAlert message={error_message} />
+            {/if}
+            <Input
+              type="text"
+              bind:value={channel_name}
+              placeholder="Channel name"
+              class="max-w-xs"
+            />
           {/if}
-          <Input
-            type="text"
-            bind:value={channel_name}
-            placeholder="Channel name"
-            class="max-w-xs"
+          <Config
+            bind:filters
+            bind:strategy
+            bind:this={config_component}
+            {preset_list}
           />
-        {/if}
-        <Config
-          bind:filters
-          bind:strategy
-          bind:this={config_component}
-          {preset_list}
-        />
-        <Button
-          class="mt-4 max-w-24"
-          on:click={view_edit ? save_config : add_streamer}
-        >
-          {#if view_edit}
-            Save config
-          {:else}
-            Add streamer
-          {/if}
-        </Button>
-      </div>
+          <Button
+            class="mt-4 max-w-24"
+            on:click={view_edit ? save_config : add_streamer}
+          >
+            {#if view_edit}
+              Save config
+            {:else}
+              Add streamer
+            {/if}
+          </Button>
+        </div>
+      </ScrollArea>
     </Dialog.Content>
   </Dialog.Root>
 
   <Dialog.Root bind:open={preset_dialog}>
     <Dialog.Content class="lg:!min-w-[50%] md:!min-w-[100%]">
-        <Dialog.Header>
-          <Dialog.Title>Preset config</Dialog.Title>
-        </Dialog.Header>
-        <div class ="flex flex-col items-center !max-h-[90vh] !min-h-[10vh]">
-          <ScrollArea class="!max-h-[90vh] !min-h-[10vh] w-full">
-            <div class="flex flex-col items-center">
-              {#if view_edit}
-                <Select.Root bind:selected={preset}>
-                  <Select.Trigger class="my-2 max-w-xs">
-                    <Select.Value placeholder="Preset" />
-                  </Select.Trigger>
-                  <Select.Content>
-                    {#each preset_list as p}
-                      <Select.Item value={p.value}>{p.label}</Select.Item>
-                    {/each}
-                  </Select.Content>
-                </Select.Root>
-                {#if preset.value != undefined}
-                  <Config
-                    bind:filters
-                    bind:strategy
-                    bind:this={config_component}
-                    preset_mode={true}
-                  />
-                {/if}
-              {:else}
-                {#if add_streamer_alert}
-                  <ErrorAlert message={error_message} />
-                {/if}
-                <Input
-                  type="text"
-                  bind:value={preset_name}
-                  placeholder="Preset name"
-                />
+      <Dialog.Header>
+        <Dialog.Title>Preset config</Dialog.Title>
+      </Dialog.Header>
+      <div class="flex flex-col items-center !max-h-[85vh] !min-h-[10vh]">
+        {#if view_edit}
+          <Select.Root bind:selected={preset}>
+            <Select.Trigger class="my-2 max-w-xs">
+              <Select.Value placeholder="Preset" />
+            </Select.Trigger>
+            <Select.Content class="z-[1000]">
+              {#each Object.entries(preset_list) as p}
+                <Select.Item value={p[0]}>{p[1].label}</Select.Item>
+              {/each}
+            </Select.Content>
+          </Select.Root>
+        {/if}
+        <ScrollArea class="!max-h-[85vh] !min-h-[10vh] w-full">
+          <div class="flex flex-col items-center">
+            {#if view_edit}
+              {#if preset.value != undefined}
                 <Config
-                  bind:filters
                   bind:strategy
                   bind:this={config_component}
                   preset_mode={true}
                 />
               {/if}
-            </div>
-          </ScrollArea>
-          <Button class="mt-4 max-w-24" on:click={save_preset}>
-            Save preset
-          </Button>
-        </div>
+            {:else}
+              {#if add_streamer_alert}
+                <ErrorAlert message={error_message} />
+              {/if}
+              <Input
+                type="text"
+                bind:value={preset_name}
+                placeholder="Preset name"
+                class="max-w-64 mt-2"
+              />
+              <Config
+                bind:strategy
+                bind:this={config_component}
+                preset_mode={true}
+              />
+            {/if}
+          </div>
+        </ScrollArea>
+        <Button class="mt-4 max-w-24" on:click={save_preset}>
+          Save preset
+        </Button>
+      </div>
     </Dialog.Content>
   </Dialog.Root>
 
@@ -522,8 +535,8 @@
                 <Select.Value placeholder="Preset" />
               </Select.Trigger>
               <Select.Content>
-                {#each preset_list as p}
-                  <Select.Item value={p.value}>{p.label}</Select.Item>
+                {#each Object.entries(preset_list) as p}
+                  <Select.Item value={p[0]}>{p[1].label}</Select.Item>
                 {/each}
               </Select.Content>
             </Select.Root>

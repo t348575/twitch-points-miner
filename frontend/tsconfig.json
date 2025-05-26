@@ -19,7 +19,10 @@
     "baseUrl": ".",
     "paths": {
       "$lib": ["./src/lib"],
-      "$lib/*": ["./src/lib/*"]
+      "$lib/*": ["./src/lib/*"],
+      "$common": ["./src/common.ts"],
+      "$ui": ["./src/lib/components/ui"],
+      "$ui/*": ["./src/lib/components/ui/*"]
     }
   },
   "include": ["src/**/*.ts", "src/**/*.js", "src/**/*.svelte"],

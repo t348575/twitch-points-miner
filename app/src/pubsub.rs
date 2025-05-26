@@ -1,14 +1,16 @@
 use std::{
     collections::HashMap,
     ops::Deref,
+    path::PathBuf,
     str::FromStr,
     sync::Arc,
     time::{Duration, Instant},
 };
 
+use chrono::{DateTime, Local};
 use common::{
-    config::{filters::filter_matches, *},
-    remove_duplicates_in_place,
+    config::{filters, strategy, *},
+    execute_js, remove_duplicates_in_place,
     twitch::{
         api::{self, SpadeInfo},
         gql,
@@ -17,10 +19,11 @@ use common::{
     types::*,
 };
 use eyre::{eyre, Context, ContextCompat, Result};
+use filters::Filter;
 use flume::{unbounded, Receiver, Sender};
 use indexmap::IndexMap;
 use rand::Rng;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::{spawn, sync::RwLock, time::sleep};
 use tracing::{debug, error, info, trace, warn};
 use twitch_api::{
@@ -54,6 +57,8 @@ pub struct PubSub {
     pub user_name: String,
     pub configs: HashMap<String, StreamerConfigRefWrapper>,
     #[serde(skip)]
+    pub js_dir: PathBuf,
+    #[serde(skip)]
     pub gql: gql::Client,
     #[serde(skip)]
     pub ws_tx: Sender<Request>,
@@ -73,6 +78,7 @@ impl PubSub {
         active_predictions: Vec<Vec<(Event, bool)>>,
         presets: IndexMap<String, StreamerConfig>,
         simulate: bool,
+        js_dir: PathBuf,
         user_info: (String, String),
         gql: gql::Client,
         ws_tx: Sender<Request>,
@@ -138,6 +144,7 @@ impl PubSub {
             user_id: user_info.0,
             user_name: user_info.1,
             configs,
+            js_dir,
             ws_tx,
             analytics,
             analytics_tx,
@@ -159,6 +166,7 @@ impl PubSub {
             streamers: Default::default(),
             simulate: Default::default(),
             spade_info: Default::default(),
+            js_dir: Default::default(),
             user_id: Default::default(),
             user_name: Default::default(),
             configs: Default::default(),
@@ -518,15 +526,15 @@ impl PubSub {
             s.last_points_refresh = Instant::now();
         }
 
-        if let Some((outcome_id, points_to_bet)) =
-            prediction_logic(&s, event_id).context("Prediction logic")?
+        if let Some(bet) =
+            prediction_logic(&s, event_id, &self.js_dir).context("Prediction logic")?
         {
             info!(
                 "{}: predicting {}, with points {}",
-                s.info.channel_name, event_id, points_to_bet
+                s.info.channel_name, event_id, bet.points
             );
             self.gql
-                .make_prediction(points_to_bet, event_id, &outcome_id, self.simulate)
+                .make_prediction(bet.points, event_id, &bet.outcome_id, self.simulate)
                 .await
                 .context("Make prediction")?;
             let s = self.streamers.get_mut(streamer).unwrap();
@@ -548,7 +556,7 @@ impl PubSub {
                         PointsInfo::Prediction(event_id.to_owned(), entry_id),
                     )?;
 
-                    analytics.place_bet(&event_id, channel_id, &outcome_id, points_to_bet)
+                    analytics.place_bet(&event_id, channel_id, &bet.outcome_id, bet.points)
                 }))
                 .await
                 .map_err(|_| eyre!("Failed to send prediction to analytics"))?;
@@ -557,7 +565,51 @@ impl PubSub {
     }
 }
 
-pub fn prediction_logic(streamer: &StreamerState, event_id: &str) -> Result<Option<(String, u32)>> {
+fn filter_matches(
+    event: &Event,
+    filter: &Filter,
+    streamer: &StreamerState,
+    js_dir: &PathBuf,
+) -> Result<bool> {
+    let res = match filter {
+        Filter::TotalUsers(t) => {
+            event.outcomes.iter().fold(0, |a, b| a + b.total_users) as u32 >= *t
+        }
+        Filter::DelaySeconds(d) => {
+            let created_at: DateTime<Local> =
+                DateTime::parse_from_rfc3339(event.created_at.as_str())?.into();
+            (chrono::Local::now() - created_at).num_seconds() as u32 >= *d
+        }
+        Filter::DelayPercentage(d) => {
+            let created_at: DateTime<Local> =
+                DateTime::parse_from_rfc3339(event.created_at.as_str())?.into();
+            let d = event.prediction_window_seconds as f64 * (d / 100.0);
+            (chrono::Local::now() - created_at).num_seconds() as f64 >= d
+        }
+        Filter::External(external) => execute_js(streamer, event, {
+            let mut external = external.clone();
+            external.attach_dir(js_dir);
+            external
+        })
+        .context(format!(
+            "External filter for {}",
+            streamer.info.channel_name
+        ))?,
+    };
+    Ok(res)
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PredictionLogicResult {
+    pub outcome_id: String,
+    pub points: u32,
+}
+
+pub fn prediction_logic(
+    streamer: &StreamerState,
+    event_id: &str,
+    js_dir: &PathBuf,
+) -> Result<Option<PredictionLogicResult>> {
     let prediction = streamer.predictions.get(event_id);
     if prediction.is_none() {
         return Ok(None);
@@ -571,41 +623,40 @@ pub fn prediction_logic(streamer: &StreamerState, event_id: &str) -> Result<Opti
 
     let prediction = prediction.unwrap();
     for filter in &c.config.prediction.filters {
-        if !filter_matches(&prediction.0, filter, streamer).context("Checking filter")? {
+        if !filter_matches(&prediction.0, filter, streamer, js_dir).context("Checking filter")? {
             debug!("Filter matches {:#?}", filter);
             return Ok(None);
         }
     }
 
+    if prediction.0.outcomes.len() < 2 {
+        return Ok(None);
+    }
+
+    let total_points = prediction
+        .0
+        .outcomes
+        .iter()
+        .fold(0, |a, b| a + b.total_points);
+
+    let mut odds_percentage = Vec::new();
+    odds_percentage.reserve_exact(prediction.0.outcomes.len());
+    for o in &prediction.0.outcomes {
+        let odds = if o.total_points == 0 {
+            0.0
+        } else {
+            total_points as f64 / o.total_points as f64
+        };
+        odds_percentage.push(if odds == 0.0 { 0.0 } else { 1.0 / odds });
+    }
+
     match &c.config.prediction.strategy {
         strategy::Strategy::Detailed(s) => {
-            if prediction.0.outcomes.len() < 2 {
-                return Ok(None);
-            }
-
-            let total_points = prediction
-                .0
-                .outcomes
-                .iter()
-                .fold(0, |a, b| a + b.total_points);
-
-            let mut odds_percentage = Vec::new();
-            odds_percentage.reserve_exact(prediction.0.outcomes.len());
-            for o in &prediction.0.outcomes {
-                let odds = if o.total_points == 0 {
-                    0.0
-                } else {
-                    total_points as f64 / o.total_points as f64
-                };
-                odds_percentage.push(if odds == 0.0 { 0.0 } else { 1.0 / odds });
-            }
-
             let mut rng = rand::thread_rng();
             for (idx, p) in odds_percentage.into_iter().enumerate() {
                 debug!("Odds for {}: {}", prediction.0.outcomes[idx].id, p);
 
-                let empty_vec = Vec::new();
-                let points = s.detailed.as_ref().unwrap_or(&empty_vec).iter().find(|x| {
+                let points = s.detailed.iter().find(|x| {
                     debug!("Checking config {x:#?}");
                     let does_match = match x._type {
                         strategy::OddsComparisonType::Le => p <= x.threshold,
@@ -620,22 +671,34 @@ pub fn prediction_logic(streamer: &StreamerState, event_id: &str) -> Result<Opti
                 match points {
                     Some(s) => {
                         debug!("Using high odds config {s:#?}");
-                        return Ok(Some((
-                            prediction.0.outcomes[idx].id.clone(),
-                            s.points.value(streamer.points),
-                        )));
+                        return Ok(Some(PredictionLogicResult {
+                            outcome_id: prediction.0.outcomes[idx].id.clone(),
+                            points: s.points.value(streamer.points),
+                        }));
                     }
                     None => {
                         if p >= s.default.min_percentage && p <= s.default.max_percentage {
                             debug!("Using default odds config {:#?} {}", s.default, p);
-                            return Ok(Some((
-                                prediction.0.outcomes[idx].id.clone(),
-                                s.default.points.value(streamer.points),
-                            )));
+                            return Ok(Some(PredictionLogicResult {
+                                outcome_id: prediction.0.outcomes[idx].id.clone(),
+                                points: s.default.points.value(streamer.points),
+                            }));
                         }
                     }
                 }
             }
+        }
+        strategy::Strategy::External(external) => {
+            let result: Option<PredictionLogicResult> = execute_js(streamer, &prediction.0, {
+                let mut external = external.clone();
+                external.attach_dir(js_dir);
+                external
+            })
+            .context(format!(
+                "Prediction logic for {}",
+                streamer.info.channel_name
+            ))?;
+            return Ok(result);
         }
     }
     Ok(None)
@@ -886,6 +949,7 @@ mod update_spade_url {
 mod test {
     use std::{
         collections::HashMap,
+        path::PathBuf,
         str::FromStr,
         sync::Arc,
         time::{Duration, Instant},
@@ -902,13 +966,17 @@ mod test {
     };
 
     use common::{
-        config::{strategy::*, ConfigType, PredictionConfig, StreamerConfig},
+        config::{
+            filters,
+            strategy::{self, *},
+            ConfigType, External, ExternalType, PredictionConfig, StreamerConfig,
+        },
         testing::{container, TestContainer},
         twitch::api::SpadeInfo,
         types::*,
     };
 
-    use crate::pubsub::prediction_logic;
+    use crate::pubsub::{prediction_logic, PredictionLogicResult};
 
     use super::PubSub;
 
@@ -994,7 +1062,7 @@ mod test {
                 },
             };
 
-            d.detailed = Some(vec![
+            d.detailed = vec![
                 DetailedOdds {
                     _type: s::OddsComparisonType::Le,
                     threshold: 0.10,
@@ -1013,36 +1081,43 @@ mod test {
                         percent: 0.01,
                     },
                 },
-            ]);
+            ];
         }
 
         drop(config_ref);
-        let res = prediction_logic(&streamer, "pred-key-1")?;
+        let js_dir = PathBuf::new();
+        let res = prediction_logic(&streamer, "pred-key-1", &js_dir)?;
         assert_eq!(res, None);
 
         {
             let pred = streamer.predictions.get_mut("pred-key-1").unwrap();
             pred.0.outcomes[2] = outcome_from(3, 45_000, 10);
         }
-        let res = prediction_logic(&streamer, "pred-key-1")?;
+        let res = prediction_logic(&streamer, "pred-key-1", &js_dir)?;
         assert_eq!(res, None);
 
         {
             let pred = streamer.predictions.get_mut("pred-key-1").unwrap();
             pred.0.outcomes[2] = outcome_from(3, 40_000, 10);
         }
-        let res = prediction_logic(&streamer, "pred-key-1")?;
+        let res = prediction_logic(&streamer, "pred-key-1", &js_dir)?;
         assert_eq!(
             res,
-            Some((
-                "3".to_owned(),
-                (streamer.points as f64 * default_points_percentage) as u32
-            ))
+            Some(PredictionLogicResult {
+                outcome_id: "3".to_owned(),
+                points: (streamer.points as f64 * default_points_percentage) as u32
+            })
         );
 
         streamer.points = 500000;
-        let res = prediction_logic(&streamer, "pred-key-1")?;
-        assert_eq!(res, Some(("3".to_owned(), default_max_points)));
+        let res = prediction_logic(&streamer, "pred-key-1", &js_dir)?;
+        assert_eq!(
+            res,
+            Some(PredictionLogicResult {
+                outcome_id: "3".to_owned(),
+                points: default_max_points
+            })
+        );
 
         Ok(())
     }
@@ -1076,7 +1151,7 @@ mod test {
                 },
             };
 
-            d.detailed = Some(vec![
+            d.detailed = vec![
                 DetailedOdds {
                     _type: s::OddsComparisonType::Le,
                     threshold: 0.10,
@@ -1095,19 +1170,178 @@ mod test {
                         percent: 0.01,
                     },
                 },
-            ]);
+            ];
         }
 
         drop(config_ref);
-        let res = prediction_logic(&streamer, "pred-key-1")?;
+        let js_dir = PathBuf::new();
+        let res = prediction_logic(&streamer, "pred-key-1", &js_dir)?;
         assert_eq!(
             res,
-            Some((
-                "1".to_owned(),
-                (streamer.points as f64 * high_odds_percentage) as u32
-            ))
+            Some(PredictionLogicResult {
+                outcome_id: "1".to_owned(),
+                points: (streamer.points as f64 * high_odds_percentage) as u32
+            })
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn filter_js_basic() -> Result<()> {
+        let js_dir = PathBuf::new();
+        let matches = super::filter_matches(
+            &Event {
+                id: "".to_owned(),
+                channel_id: "1".to_owned(),
+                created_at: Timestamp::now(),
+                ended_at: None,
+                locked_at: None,
+                outcomes: vec![],
+                prediction_window_seconds: 60,
+                status: "".to_owned(),
+                title: "".to_owned(),
+                winning_outcome_id: None,
+            },
+            &filters::Filter::External(External {
+                _type: ExternalType::Inline,
+                data: r#"state.points === 5000"#.to_owned(),
+            }),
+            &StreamerState {
+                info: StreamerInfo::default(),
+                predictions: HashMap::new(),
+                config: StreamerConfigRefWrapper::new(StreamerConfigRef {
+                    _type: ConfigTypeRef::Specific,
+                    config: StreamerConfig::default(),
+                }),
+                points: 5000,
+                last_points_refresh: Instant::now(),
+            },
+            &js_dir,
+        )?;
+
+        assert!(matches);
+        Ok(())
+    }
+
+    #[test]
+    fn filter_js_external() -> Result<()> {
+        let path = std::env::temp_dir().join("filter_js_external.ts");
+        std::fs::write(
+            &path,
+            r#"
+            export function get_state() {
+                return state.points === 4000;
+            }
+        "#,
+        )?;
+        let js_dir = PathBuf::new();
+        let matches = super::filter_matches(
+            &Event {
+                id: "".to_owned(),
+                channel_id: "1".to_owned(),
+                created_at: Timestamp::now(),
+                ended_at: None,
+                locked_at: None,
+                outcomes: vec![],
+                prediction_window_seconds: 60,
+                status: "".to_owned(),
+                title: "".to_owned(),
+                winning_outcome_id: None,
+            },
+            &filters::Filter::External(External {
+                _type: ExternalType::File,
+                data: path.to_str().unwrap().to_owned(),
+            }),
+            &StreamerState {
+                info: StreamerInfo::default(),
+                predictions: HashMap::new(),
+                config: StreamerConfigRefWrapper::new(StreamerConfigRef {
+                    _type: ConfigTypeRef::Specific,
+                    config: StreamerConfig::default(),
+                }),
+                points: 4000,
+                last_points_refresh: Instant::now(),
+            },
+            &js_dir,
+        )?;
+
+        assert!(matches);
+        Ok(())
+    }
+
+    #[test]
+    fn strategy_js_basic() -> Result<()> {
+        let strategy = strategy::Strategy::External(External {
+            _type: ExternalType::Inline,
+            data: r#"
+            ({
+                outcome_id: event.outcomes[0].id,
+                points: 5000
+            })
+            "#
+            .to_owned(),
+        });
+        let mut config = StreamerConfig::default();
+        config.prediction.strategy = strategy;
+
+        let js_dir = PathBuf::new();
+        let bet = super::prediction_logic(
+            &StreamerState {
+                info: StreamerInfo::default(),
+                predictions: HashMap::from([(
+                    "a".to_owned(),
+                    (
+                        Event {
+                            id: "".to_owned(),
+                            channel_id: "1".to_owned(),
+                            created_at: Timestamp::now(),
+                            ended_at: None,
+                            locked_at: None,
+                            outcomes: vec![
+                                Outcome {
+                                    id: "1".to_owned(),
+                                    color: "RED".to_owned(),
+                                    title: "1".to_owned(),
+                                    total_points: 50000,
+                                    total_users: 4,
+                                    top_predictors: vec![],
+                                },
+                                Outcome {
+                                    id: "2".to_owned(),
+                                    color: "BLUE".to_owned(),
+                                    title: "2".to_owned(),
+                                    total_points: 35000,
+                                    total_users: 4,
+                                    top_predictors: vec![],
+                                },
+                            ],
+                            prediction_window_seconds: 60,
+                            status: "".to_owned(),
+                            title: "".to_owned(),
+                            winning_outcome_id: None,
+                        },
+                        false,
+                    ),
+                )]),
+                config: StreamerConfigRefWrapper::new(StreamerConfigRef {
+                    _type: ConfigTypeRef::Specific,
+                    config,
+                }),
+                points: 5000,
+                last_points_refresh: Instant::now(),
+            },
+            "a",
+            &js_dir,
+        )?;
+
+        assert_eq!(
+            bet,
+            Some(PredictionLogicResult {
+                points: 5000,
+                outcome_id: "1".to_owned()
+            })
+        );
         Ok(())
     }
 
