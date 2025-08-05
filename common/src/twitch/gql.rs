@@ -1,15 +1,9 @@
-use eyre::{bail, eyre, Result};
-use rand::{
-    distr::{Alphanumeric, SampleString},
-    rng,
-};
+use eyre::{eyre, Result};
+use rand::distr::{Alphanumeric, SampleString};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use strum::EnumDiscriminants;
-use twitch_api::{
-    eventsub::{channel::ChannelPredictionProgressV1Payload, Event, Message},
-    types::UserId,
-};
+use strum_macros::EnumDiscriminants;
+use twitch_api::{pubsub, types::UserId};
 
 use super::{CLIENT_ID, DEVICE_ID, USER_AGENT};
 use crate::{
@@ -247,7 +241,7 @@ impl Client {
     pub async fn channel_points_context(
         &self,
         channel_names: &[&str],
-    ) -> Result<Vec<Vec<(ChannelPredictionProgressV1Payload, bool)>>> {
+    ) -> Result<Vec<Vec<(pubsub::predictions::Event, bool)>>> {
         let request = channel_names
             .iter()
             .map(|x| GqlRequest::channel_points_prediction_context(x))
@@ -284,7 +278,7 @@ impl Client {
                     }
                 }
 
-                match serde_json::from_value::<Vec<Event>>(v) {
+                match serde_json::from_value::<Vec<pubsub::predictions::Event>>(v) {
                     Ok(s) => {
                         match traverse_json(
                             &mut x,
@@ -303,24 +297,18 @@ impl Client {
                                     .collect::<Vec<_>>();
                                 let items = s
                                     .into_iter()
-                                    .filter_map(|e| get_prediction_progress_v1_payload(&e).ok())
-                                    .map(|payload| {
+                                    .map(|x| {
                                         let bet_placed = recent
                                             .iter()
-                                            .find(|y| (**y).eq(payload.id.as_str()))
+                                            .find(|y| (**y).eq(x.id.as_str()))
                                             .and(Some(true))
                                             .unwrap_or(false);
-                                        (payload, bet_placed)
+                                        (x, bet_placed)
                                     })
                                     .collect();
                                 Some(items)
                             }
-                            None => Some(
-                                s.into_iter()
-                                    .filter_map(|e| get_prediction_progress_v1_payload(&e).ok())
-                                    .map(|x| (x, false))
-                                    .collect(),
-                            ),
+                            None => Some(s.into_iter().map(|x| (x, false)).collect()),
                         }
                     }
                     Err(_) => None,
@@ -450,7 +438,7 @@ impl GqlRequest {
                     event_id: event_id.to_owned(),
                     outcome_id: outcome_id.to_owned(),
                     points,
-                    transaction_id: Alphanumeric.sample_string(&mut rng(), 32),
+                    transaction_id: Alphanumeric.sample_string(&mut rand::rng(), 32),
                 },
             }),
         }
@@ -520,18 +508,5 @@ impl GqlRequest {
                 },
             }),
         }
-    }
-}
-
-fn get_prediction_progress_v1_payload(e: &Event) -> Result<ChannelPredictionProgressV1Payload> {
-    match e {
-        Event::ChannelPredictionProgressV1(d) => {
-            if let Message::Notification(n) = &d.message {
-                return Ok(n.to_owned());
-            } else {
-                bail!("Expected a notification for prediction progress payload");
-            }
-        }
-        _ => bail!("Not a prediction progress event"),
     }
 }

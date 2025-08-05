@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use serde::{Deserialize, Serialize, Serializer};
-use twitch_api::{eventsub::channel::ChannelPredictionProgressV1Payload, types::UserId};
+use twitch_api::{pubsub::predictions::Event, types::UserId};
 
 use crate::config::StreamerConfig;
 
@@ -9,7 +9,7 @@ use crate::config::StreamerConfig;
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct StreamerState {
     pub info: StreamerInfo,
-    pub predictions: HashMap<String, (ChannelPredictionProgressV1Payload, bool)>,
+    pub predictions: HashMap<String, (Event, bool)>,
     pub config: StreamerConfigRefWrapper,
     pub points: u32,
     #[serde(skip)]
@@ -44,7 +44,6 @@ impl StreamerState {
 #[derive(Debug, Default, Clone, Serialize)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct StreamerConfigRef {
-    #[serde(rename = "type")]
     pub _type: ConfigTypeRef,
     pub config: StreamerConfig,
 }

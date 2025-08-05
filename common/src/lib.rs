@@ -1,8 +1,9 @@
+#![allow(deprecated)]
 use config::{External, ExternalType};
 use eyre::{eyre, Context, Result};
 use rustyscript::deno_core::v8;
 use serde::de::DeserializeOwned;
-use twitch_api::eventsub::channel::ChannelPredictionProgressV1Payload;
+use twitch_api::pubsub::predictions::Event;
 use types::StreamerState;
 
 pub mod config;
@@ -28,11 +29,7 @@ where
     arr[0..kept].to_vec()
 }
 
-pub fn execute_js<T>(
-    s: &StreamerState,
-    e: &ChannelPredictionProgressV1Payload,
-    external: External,
-) -> Result<T>
+pub fn execute_js<T>(s: &StreamerState, e: &Event, external: External) -> Result<T>
 where
     T: Send + DeserializeOwned + 'static,
 {
@@ -77,10 +74,7 @@ where
     }
 }
 
-fn create_js_runtime(
-    s: StreamerState,
-    e: ChannelPredictionProgressV1Payload,
-) -> Result<rustyscript::Runtime> {
+fn create_js_runtime(s: StreamerState, e: Event) -> Result<rustyscript::Runtime> {
     let mut runtime = rustyscript::Runtime::new(Default::default())?;
 
     let deno_runtime = runtime.deno_runtime();

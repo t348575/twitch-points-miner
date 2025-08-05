@@ -9,10 +9,7 @@ use futures_util::{
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
 };
-use rand::{
-    distr::{Alphanumeric, SampleString},
-    rng,
-};
+use rand::distr::{Alphanumeric, SampleString};
 use serde_json::json;
 use tokio::{
     net::TcpStream,
@@ -23,17 +20,18 @@ use tokio::{
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, info, trace, warn};
-use twitch_api::{
-    eventsub::{self, Event},
-    twitch_oauth2::{AccessToken, UserToken},
-    HelixClient,
+use twitch_api::pubsub::{
+    listen_command, unlisten_command,
+    video_playback::{VideoPlaybackById, VideoPlaybackReply},
+    Response, TopicData, Topics,
 };
+
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 pub struct WsPool {
     connections: Vec<WsConn>,
     rx: Receiver<Request>,
-    tx: Sender<Event>,
+    tx: Sender<TopicData>,
     access_token: String,
     #[cfg(feature = "testing")]
     base_url: String,
@@ -41,14 +39,14 @@ pub struct WsPool {
 
 #[derive(Debug, PartialEq)]
 pub enum Request {
-    Listen(Event),
-    UnListen(Event),
+    Listen(Topics),
+    UnListen(Topics),
 }
 
 struct WsConn {
     reader: JoinHandle<Result<()>>,
     writer: SplitSink<WsStream, Message>,
-    events: Vec<(Event, String)>,
+    topics: Vec<(Topics, String)>,
     state: Arc<Mutex<WsConnState>>,
     access_token: String,
 }
@@ -82,7 +80,7 @@ impl WsPool {
     ) -> (
         JoinHandle<()>,
         Sender<Request>,
-        (Sender<Event>, Receiver<Event>),
+        (Sender<TopicData>, Receiver<TopicData>),
     ) {
         let (req_tx, req_rx) = flume::unbounded();
         let (res_tx, res_rx) = flume::unbounded();
@@ -122,7 +120,7 @@ impl WsPool {
                     let topic_already_exists = self
                         .connections
                         .iter()
-                        .flat_map(|x| x.events.clone())
+                        .flat_map(|x| x.topics.clone())
                         .find(|x| x.0.eq(&topic));
                     if topic_already_exists.is_none() {
                         self.listen_command(topic).await
@@ -137,7 +135,7 @@ impl WsPool {
                         .connections
                         .drain(..)
                         .filter_map(|x| {
-                            if x.events.iter().any(|x| x.0.eq(&topic)) && conn.is_none() {
+                            if x.topics.iter().any(|x| x.0.eq(&topic)) && conn.is_none() {
                                 conn = Some(x);
                                 None
                             } else {
@@ -148,7 +146,7 @@ impl WsPool {
 
                     if let Some(mut conn) = conn {
                         let res = conn.unlisten_topic(&topic).await;
-                        conn.events.retain(|x| x.0.ne(&topic));
+                        conn.topics.retain(|x| x.0.ne(&topic));
                         if res.is_err() {
                             conn = self.reconnect(conn).await;
                         }
@@ -156,11 +154,17 @@ impl WsPool {
                     }
 
                     // Send a not-live message back to other listeners, so they can destruct any events they have subscribed to
-                    if let Event::StreamOfflineV1(payload) = &topic {
-                        if let eventsub::Message::Notification(payload) = &payload.message {
-                            info!("Unlisten on stream {}", payload.broadcaster_user_name);
-                            _ = self.tx.send_async(topic.to_owned()).await;
-                        }
+                    if let Topics::VideoPlaybackById(VideoPlaybackById { channel_id }) = topic {
+                        info!("Unlisten on stream {channel_id}");
+                        _ = self
+                            .tx
+                            .send_async(TopicData::VideoPlaybackById {
+                                topic: VideoPlaybackById { channel_id },
+                                reply: Box::new(VideoPlaybackReply::StreamDown {
+                                    server_time: 0.0,
+                                }),
+                            })
+                            .await;
                     }
                 }
                 Ok(Err(_)) => break,
@@ -202,8 +206,8 @@ impl WsPool {
                 if !state.retry_commands.is_empty() {
                     for nonce in state.retry_commands {
                         let mut topic = None;
-                        conn.events = conn
-                            .events
+                        conn.topics = conn
+                            .topics
                             .drain(..)
                             .filter_map(|x| {
                                 if x.1.eq(&nonce) {
@@ -229,18 +233,18 @@ impl WsPool {
                 self.connections = self
                     .connections
                     .drain(..)
-                    .filter(|x| !x.events.is_empty())
+                    .filter(|x| !x.topics.is_empty())
                     .collect();
                 self.connections.push(conn);
             }
         }
     }
 
-    async fn listen_command(&mut self, topic: Event) {
+    async fn listen_command(&mut self, topic: Topics) {
         if self
             .connections
             .iter()
-            .filter(|x| x.events.len() < 300)
+            .filter(|x| x.topics.len() < 50)
             .count()
             == 0
         {
@@ -252,7 +256,7 @@ impl WsPool {
             .connections
             .drain(..)
             .filter_map(|x| {
-                if x.events.len() < 300 && conn.is_none() {
+                if x.topics.len() < 50 && conn.is_none() {
                     conn = Some(x);
                     None
                 } else {
@@ -265,7 +269,7 @@ impl WsPool {
         loop {
             match conn.listen_topic(&topic).await {
                 Ok(nonce) => {
-                    conn.events.push((topic, nonce));
+                    conn.topics.push((topic, nonce));
                     self.connections.push(conn);
                     break;
                 }
@@ -312,7 +316,7 @@ impl WsPool {
         let conn = WsConn {
             reader: spawn(ws_reader(state.clone(), self.tx.clone(), reader)),
             writer,
-            events: Vec::new(),
+            topics: Vec::new(),
             state,
             access_token: self.access_token.clone(),
         };
@@ -325,7 +329,7 @@ impl WsPool {
             pool: &mut WsPool,
             mut conn: WsConn,
         ) -> Result<WsConn, (WsConn, Report)> {
-            debug!("Reconnecting ws with {} topics", conn.events.len());
+            debug!("Reconnecting ws with {} topics", conn.topics.len());
             if !conn.reader.is_finished() {
                 _ = conn.writer.close().await;
                 conn.reader.abort();
@@ -345,8 +349,8 @@ impl WsPool {
                 }
             };
 
-            added_connection.events.clone_from(&conn.events);
-            for (t, _) in conn.events {
+            added_connection.topics.clone_from(&conn.topics);
+            for (t, _) in conn.topics {
                 let res = added_connection
                     .listen_topic(&t)
                     .await
@@ -354,7 +358,7 @@ impl WsPool {
                 match res {
                     Ok(nonce) => {
                         if let Some((_, n)) = added_connection
-                            .events
+                            .topics
                             .iter_mut()
                             .find(|(x, _)| (*x).eq(&t))
                         {
@@ -364,7 +368,7 @@ impl WsPool {
                     Err(err) => return Err((added_connection, err)),
                 }
             }
-            info!("Reconnected with {} topics", added_connection.events.len());
+            info!("Reconnected with {} topics", added_connection.topics.len());
             Ok(added_connection)
         }
 
@@ -418,7 +422,7 @@ pub async fn remove_streamer(ws_tx: &Sender<Request>, channel_id: u32) -> Result
 impl WsConn {
     /// Returns the nonce
     async fn listen_topic(&mut self, topic: &Topics) -> Result<String> {
-        let nonce = Alphanumeric.sample_string(&mut rng(), 30);
+        let nonce = Alphanumeric.sample_string(&mut rand::rng(), 30);
         let msg = listen_command(&[topic.clone()], self.access_token.as_str(), nonce.as_str())
             .context("Generate listen command")?;
         trace!("{msg}");
@@ -431,7 +435,7 @@ impl WsConn {
 
     /// Returns the nonce
     async fn unlisten_topic(&mut self, topic: &Topics) -> Result<()> {
-        let nonce = Alphanumeric.sample_string(&mut rng(), 30);
+        let nonce = Alphanumeric.sample_string(&mut rand::rng(), 30);
         let msg = unlisten_command(&[topic.clone()], nonce.as_str())
             .context("Generate listen command")?;
         trace!("{msg}");

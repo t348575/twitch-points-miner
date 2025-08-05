@@ -15,7 +15,7 @@ use twitch_api::types::UserId;
 use utoipa::ToSchema;
 use validator::ValidateArgs;
 
-use crate::{make_paths, pubsub::PubSub, sub_error};
+use crate::{make_paths, pubsub::PubSub, sub_error, utoipa_name_schema};
 
 use super::{
     ApiError, ApiState, ConfigTypeRef, RouterBuild, StreamerConfigRef, StreamerConfigRefWrapper,
@@ -33,7 +33,7 @@ pub fn build(state: ApiState) -> RouterBuild {
         .route("/external-file/:file", get(get_external_file))
         .with_state(state);
 
-    let schemas = vec![AddUpdatePreset::schema()];
+    let schemas = vec![AddUpdatePreset::name_schema()];
 
     let paths = make_paths!(
         __path_get_presets,
@@ -107,6 +107,7 @@ struct AddUpdatePreset {
     name: String,
     config: StreamerConfig,
 }
+utoipa_name_schema!(AddUpdatePreset);
 
 #[utoipa::path(
     post,

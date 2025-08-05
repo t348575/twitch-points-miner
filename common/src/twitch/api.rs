@@ -1,14 +1,9 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose::URL_SAFE, Engine};
-use eyre::{bail, eyre, Context, ContextCompat, Result};
+use eyre::{eyre, Context, ContextCompat, Result};
 use serde_json::json;
-use twitch_api::{
-    eventsub::{stream::StreamOnlineV1, Status, Transport},
-    twitch_oauth2::{AccessToken, UserToken},
-    types::UserId,
-    HelixClient,
-};
+use twitch_api::types::UserId;
 
 use crate::{twitch::DEVICE_ID, types::StreamerInfo};
 
@@ -132,32 +127,4 @@ pub async fn set_viewership(
     }
 
     Ok(())
-}
-
-pub struct Helix<'a> {
-    client: HelixClient<'a, reqwest::Client>,
-    token: UserToken,
-}
-
-impl<'a> Helix<'a> {
-    pub async fn new(access_token: &str) -> Result<Helix> {
-        let client: HelixClient<reqwest::Client> = HelixClient::default();
-        let token = UserToken::from_token(&client, AccessToken::from(access_token)).await?;
-        Ok(Helix { client, token })
-    }
-
-    pub async fn streamer_online(&self, user_id: UserId, session_id: &str) -> Result<()> {
-        let res = self
-            .client
-            .create_eventsub_subscription(
-                StreamOnlineV1::broadcaster_user_id(user_id),
-                Transport::websocket(session_id),
-                &self.token,
-            )
-            .await?;
-        if res.status != Status::Enabled {
-            bail!("Could not create subscription: {res:#?}")
-        }
-        Ok(())
-    }
 }

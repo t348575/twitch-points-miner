@@ -7,7 +7,7 @@ use utoipa::ToSchema;
 
 use crate::{
     analytics::{model::Outcome, AnalyticsWrapper, TimelineResult},
-    make_paths,
+    make_paths, utoipa_name_schema,
 };
 
 use super::{ApiError, RouterBuild};
@@ -17,7 +17,7 @@ pub fn build(analytics: Arc<AnalyticsWrapper>) -> RouterBuild {
         .route("/timeline", post(points_timeline))
         .with_state(analytics);
 
-    let schemas = vec![Outcome::schema(), Timeline::schema()];
+    let schemas = vec![Outcome::name_schema(), Timeline::name_schema()];
 
     let paths = make_paths!(__path_points_timeline);
 
@@ -34,6 +34,7 @@ struct Timeline {
     /// Channels
     channels: Vec<i32>,
 }
+utoipa_name_schema!(Timeline);
 
 #[utoipa::path(
     post,

@@ -4,8 +4,8 @@ use eyre::{eyre, Result};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use twitch_api::{
-    eventsub::channel::ChannelPredictionProgressV1Payload,
-    types::{DisplayName, Nickname, PredictionId, PredictionOutcome, Timestamp, UserId},
+    pubsub::predictions::{Event, Outcome},
+    types::Timestamp,
 };
 use validator::{Validate, ValidateArgs, ValidationError, ValidationErrors};
 
@@ -70,6 +70,15 @@ impl<'v_a> ValidateArgs<'v_a> for PredictionConfig {
 pub enum ConfigType {
     Preset(String),
     Specific(StreamerConfig),
+}
+impl ConfigType {
+    pub fn name_schema() -> (
+        std::borrow::Cow<'static, str>,
+        utoipa::openapi::RefOr<utoipa::openapi::Schema>,
+    ) {
+        use utoipa::{PartialSchema, ToSchema};
+        (Self::name(), Self::schema())
+    }
 }
 
 impl Config {
@@ -189,32 +198,34 @@ fn validate_external(value: &String, context: &ExternalContext) -> Result<(), Va
 fn validate_js(external: External) -> Result<(), ValidationError> {
     execute_js(
         &StreamerState::default(),
-        &ChannelPredictionProgressV1Payload {
-            broadcaster_user_id: UserId::from_static("1"),
-            broadcaster_user_login: Nickname::from_static("2"),
-            broadcaster_user_name: DisplayName::from_static("3"),
-            locks_at: Timestamp::now(),
-            started_at: Timestamp::now(),
-            id: PredictionId::from_static("1"),
+        &Event {
+            id: "1".to_owned(),
+            channel_id: "2".to_owned(),
+            created_at: Timestamp::now(),
+            ended_at: None,
+            locked_at: None,
             outcomes: vec![
-                PredictionOutcome {
+                Outcome {
                     id: "1".to_owned(),
                     title: "a".to_owned(),
-                    channel_points: Some(0),
-                    users: Some(0),
-                    top_predictors: None,
+                    total_points: 0,
+                    total_users: 0,
+                    top_predictors: vec![],
                     color: "PINK".to_owned(),
                 },
-                PredictionOutcome {
+                Outcome {
                     id: "2".to_owned(),
                     title: "b".to_owned(),
-                    channel_points: Some(0),
-                    users: Some(0),
-                    top_predictors: None,
+                    total_points: 0,
+                    total_users: 0,
+                    top_predictors: vec![],
                     color: "BLUE".to_owned(),
                 },
             ],
+            prediction_window_seconds: 30,
+            status: "".to_owned(),
             title: "test".to_owned(),
+            winning_outcome_id: None,
         },
         external,
     )

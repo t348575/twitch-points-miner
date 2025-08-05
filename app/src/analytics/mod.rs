@@ -12,7 +12,10 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 use tracing::{error, trace};
 
-use crate::analytics::model::{PredictionBet, PredictionBetWrapper};
+use crate::{
+    analytics::model::{PredictionBet, PredictionBetWrapper},
+    utoipa_name_schema,
+};
 
 use self::model::{Outcomes, Point, PointsInfo, Prediction, Streamer};
 
@@ -348,6 +351,7 @@ pub struct TimelineResult {
     difference: Option<i32>,
     prediction: Option<Prediction>,
 }
+utoipa_name_schema!(TimelineResult);
 
 impl QueryableByName<Sqlite> for TimelineResult {
     fn build<'a>(row: &impl NamedRow<'a, Sqlite>) -> deserialize::Result<Self> {

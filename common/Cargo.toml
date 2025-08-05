@@ -20,10 +20,10 @@ validator.workspace = true
 utoipa = { workspace = true, optional = true }
 base64.workspace = true
 flume.workspace = true
-tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
 rustls = "0.23"
 dialoguer = "0.11"
-testcontainers = { version = "0.23", optional = true }
+testcontainers = { version = "0.25", optional = true }
 ctor = { version = "0.4", optional = true }
 rstest = { workspace = true, optional = true }
 futures-util = { version = "0.3", default-features = false }
@@ -31,6 +31,7 @@ reqwest.workspace = true
 rustyscript = { version = "0.11", default-features = false, features = ["web"] }
 http.workspace = true
 strum = { version = "0.27", features = ["derive"] }
+strum_macros = "0.27.2"
 
 [features]
 web_api = ["dep:utoipa", "twitch_api/utoipa"]

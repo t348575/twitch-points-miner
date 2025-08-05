@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
 
 use axum::{
@@ -253,9 +254,9 @@ async fn ws_handler(
 macro_rules! send_msg {
     ($socket:tt,$data:expr) => {
         $socket
-            .send(Message::Text(serde_json::to_string(&Response::Message {
-                data: $data,
-            })?))
+            .send(Message::Text(
+                serde_json::to_string(&Response::Message { data: $data })?.into(),
+            ))
             .await?
     };
 }
@@ -263,12 +264,13 @@ macro_rules! send_msg {
 macro_rules! success_msg {
     ($socket:tt, $nonce:tt) => {
         $socket
-            .send(Message::Text(serde_json::to_string(&Response::Response(
-                TwitchResponse {
+            .send(Message::Text(
+                serde_json::to_string(&Response::Response(TwitchResponse {
                     error: None,
                     nonce: $nonce,
-                },
-            ))?))
+                }))?
+                .into(),
+            ))
             .await?
     };
 }
@@ -318,7 +320,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<AppState>>) -> Re
                         WsTest::Reconnect => {
                             let mut state = state.lock().await;
                             socket
-                                .send(Message::Text(serde_json::to_string(&Response::Reconnect)?))
+                                .send(Message::Text(serde_json::to_string(&Response::Reconnect)?.into()))
                                 .await?;
                             let field = traverse_json(
                                 state.test_stats.get_mut("Reconnect").unwrap(),
@@ -341,12 +343,15 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<AppState>>) -> Re
 
                             if field == 1 {
                                 socket
-                                    .send(Message::Text(serde_json::to_string(
-                                        &Response::Response(TwitchResponse {
-                                            error: Some("retrying mode".to_owned()),
-                                            nonce,
-                                        }),
-                                    )?))
+                                    .send(Message::Text(
+                                        serde_json::to_string(&Response::Response(
+                                            TwitchResponse {
+                                                error: Some("retrying mode".to_owned()),
+                                                nonce,
+                                            },
+                                        ))?
+                                        .into(),
+                                    ))
                                     .await?;
                             } else {
                                 success_msg!(socket, nonce);
@@ -397,7 +402,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<AppState>>) -> Re
                     },
                     Request::Ping => {
                         socket
-                            .send(Message::Text(serde_json::to_string(&Response::Pong)?))
+                            .send(Message::Text(
+                                serde_json::to_string(&Response::Pong)?.into(),
+                            ))
                             .await?
                     }
                     _ => unreachable!(),
