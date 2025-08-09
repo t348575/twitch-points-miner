@@ -216,4 +216,26 @@ mod test {
             Some(&mut serde_json::Value::Number(4.into()))
         );
     }
+
+    #[test]
+    fn traverse_base_array() {
+        let mut data: serde_json::Value = serde_json::from_str(
+            r#"
+            [
+                1,
+                2
+            ]
+        "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            traverse_json(&mut data, "[0]"),
+            Some(&mut serde_json::Value::Number(1.into()))
+        );
+        assert_eq!(
+            traverse_json(&mut data, "[1]"),
+            Some(&mut serde_json::Value::Number(2.into()))
+        );
+    }
 }

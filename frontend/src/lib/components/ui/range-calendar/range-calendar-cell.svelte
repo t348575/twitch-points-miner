@@ -2,20 +2,18 @@
 	import { RangeCalendar as RangeCalendarPrimitive } from "bits-ui";
 	import { cn } from "$lib/utils.js";
 
-	type $$Props = RangeCalendarPrimitive.CellProps;
-
-	export let date: $$Props["date"];
-	let className: $$Props["class"] = undefined;
-	export { className as class };
+	let {
+		ref = $bindable(null),
+		class: className,
+		...restProps
+	}: RangeCalendarPrimitive.CellProps = $props();
 </script>
 
 <RangeCalendarPrimitive.Cell
-	{date}
+	bind:ref
 	class={cn(
-		"relative h-9 w-9 p-0 text-center text-sm focus-within:relative focus-within:z-20 [&:has([data-selected])]:bg-accent first:[&:has([data-selected])]:rounded-l-md last:[&:has([data-selected])]:rounded-r-md [&:has([data-selected][data-outside-month])]:bg-accent/50 [&:has([data-selected][data-selection-end])]:rounded-r-md [&:has([data-selected][data-selection-start])]:rounded-l-md",
+		"size-(--cell-size) dark:[&:has([data-range-start])]:hover:bg-accent dark:[&:has([data-range-end])]:hover:bg-accent [&:has([data-range-middle])]:bg-accent dark:[&:has([data-range-middle])]:hover:bg-accent/50 [&:has([data-selected])]:bg-accent relative p-0 text-center text-sm focus-within:z-20 data-range-middle:rounded-r-md [&:first-child[data-selected]_[data-bits-day]]:rounded-l-md [&:has([data-range-end])]:rounded-r-md [&:has([data-range-middle])]:rounded-none first:[&:has([data-range-middle])]:rounded-l-md last:[&:has([data-range-middle])]:rounded-r-md [&:has([data-range-start])]:rounded-l-md [&:last-child[data-selected]_[data-bits-day]]:rounded-r-md",
 		className
 	)}
-	{...$$restProps}
->
-	<slot />
-</RangeCalendarPrimitive.Cell>
+	{...restProps}
+/>

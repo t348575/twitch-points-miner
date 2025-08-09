@@ -1,7 +1,7 @@
 <h1 align="center">twitch-points-miner</h1>
 <p align="center">
   <img alt="Views" src="https://lambda.348575.xyz/repo-view-counter?repo=twitch-points-miner"/>
-  <img alt="Build status" src="https://github.com/t348575/twitch-points-miner/actions/workflows/rust.yml/badge.svg"/>
+  <img alt="Build status" src="https://github.com/t348575/twitch-points-miner/actions/workflows/rust.yml/badge.svg?branch=master"/>
   <img alt="Docker Image Version" src="https://img.shields.io/docker/v/t348575/twitch-points-miner"/>
   <img alt="Docker Pulls" src="https://img.shields.io/docker/pulls/t348575/twitch-points-miner"/>
   <img alt="Docker Image Size" src="https://img.shields.io/docker/image-size/t348575/twitch-points-miner"/>
@@ -18,6 +18,7 @@
 * Web UI to interact with the app, and change configurations at runtime [screenshots](#Web-UI-screenshots)
 * Auto place bets on predictions
 * Watch stream to collect view points
+* Easily write your own custom prediction logic in Javascript
 * Claim view point bonuses
 * Follow raids
 * REST API to manage app (Swagger docs at /docs)
@@ -26,9 +27,7 @@
 ## Configuration
 Check [example.config.yaml](example.config.yaml) for an example configuration.
 
-For a complete list of all configuration possibilities, check [common/src/config](common/src/config).
-
-Use the log level `info` for adequate information. Use `debug` for detailed logs, or if you feel a bug is present.
+For a complete list of all configuration possibilities, check [config.md](config.md).
 
 ## Docker image
 This is the suggested way of using twitch-points-miner.
@@ -59,9 +58,11 @@ services:
       - --log-file
       - /data/twitch-points-miner.log
     ports:
-      - 3000:3000 # Web UI port
+      - 3000:3000 # Web UI/API port
     environment:
       - LOG=info
+    # Use the log level `info` for adequate information. Use `debug` for detailed logs, or if you feel a bug is present.
+    # Using the `debug` level with many streamers can lead to very large log files
 ```
 
 ## Windows

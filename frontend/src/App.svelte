@@ -38,7 +38,7 @@
     <h1 class="text-4xl mb-4 w-full text-center">Twitch points miner</h1>
     <div class="flex justify-end w-full">
       <Button
-        on:click={toggleMode}
+        onclick={toggleMode}
         variant="outline"
         size="icon"
         class="float-right"

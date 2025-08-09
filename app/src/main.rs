@@ -1,23 +1,27 @@
-use std::path::Path;
+#![allow(deprecated)]
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
+use common::twitch::api;
 use common::twitch::ws::{Request, WsPool};
 use eyre::{eyre, Context, Result};
 use tokio::sync::RwLock;
 use tokio::{fs, spawn};
-use tracing::info;
+use tracing::{error, info};
 use tracing_subscriber::fmt::format::{Compact, DefaultFields};
 use tracing_subscriber::fmt::time::ChronoLocal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
-use twitch_api::pubsub::community_points::CommunityPointsUserV1;
-use twitch_api::pubsub::video_playback::{VideoPlaybackById, VideoPlaybackReply};
-use twitch_api::pubsub::{TopicData, Topics};
+use twitch_api::pubsub::{
+    community_points::CommunityPointsUserV1,
+    predictions::PredictionsUserV1,
+    video_playback::{VideoPlaybackById, VideoPlaybackReply},
+    TopicData, Topics,
+};
 
 use crate::analytics::{Analytics, AnalyticsWrapper};
 
 mod analytics;
-// mod live;
 mod pubsub;
 mod web_api;
 
@@ -42,9 +46,10 @@ struct Args {
     /// Analytics database path
     #[arg(long, default_value_t = String::from("analytics.db"))]
     analytics_db: String,
+    /// External JS files directory
+    #[arg(long, default_value_t = String::from("/js"))]
+    js_dir: String,
 }
-
-const BASE_URL: &str = "https://twitch.tv";
 
 fn get_layer<S>(
     layer: tracing_subscriber::fmt::Layer<S>,
@@ -60,6 +65,7 @@ fn get_layer<S>(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    rustls::crypto::aws_lc_rs::default_provider().install_default().expect("Could not setup crypto");
     let args = Args::parse();
 
     let log_level = std::env::var("LOG").unwrap_or("warn".to_owned());
@@ -86,10 +92,17 @@ async fn main() -> Result<()> {
 
     tracing::trace!("{args:#?}");
 
-    if !Path::new(&args.token).exists() {
-        info!("Starting login sequence");
-        common::twitch::auth::login(&args.token).await?;
-    }
+    let token = match parse_tokens_json(&args.token).await {
+        Ok(token) => token,
+        Err(err) => {
+            error!("{err:#?}");
+            info!("Starting login sequence");
+            common::twitch::auth::login(&args.token).await?;
+            parse_tokens_json(&args.token)
+                .await
+                .context("Failed to parse tokens.json after login")?
+        }
+    };
 
     let mut c: common::config::Config = serde_yaml::from_str(
         &fs::read_to_string(&args.config)
@@ -104,7 +117,7 @@ async fn main() -> Result<()> {
     }
 
     let c_original = c.clone();
-    c.parse_and_validate()?;
+    c.parse_and_validate(&PathBuf::from(&args.js_dir))?;
 
     for item in c.watch_priority.clone().unwrap_or_default() {
         if !c.streamers.contains_key(&item) {
@@ -113,14 +126,6 @@ async fn main() -> Result<()> {
             )));
         }
     }
-
-    let token: common::twitch::auth::Token = serde_json::from_str(
-        &fs::read_to_string(args.token)
-            .await
-            .context("Reading tokens file")?,
-    )
-    .context("Parsing tokens file")?;
-    info!("Parsed tokens file");
 
     let gql = common::twitch::gql::Client::new(
         token.access_token.clone(),
@@ -205,6 +210,14 @@ async fn main() -> Result<()> {
         )))
         .await
         .context("Could not add user to pubsub")?;
+    ws_tx
+        .send_async(Request::Listen(Topics::PredictionsUserV1(
+            PredictionsUserV1 {
+                channel_id: user_info.0.parse().unwrap(),
+            },
+        )))
+        .await
+        .context("Could not add user to predictions-user-v1")?;
     // we definitely do not want to keep this in scope
     drop(ws_data_tx);
 
@@ -220,12 +233,17 @@ async fn main() -> Result<()> {
         active_predictions,
         c.presets.unwrap_or_default(),
         args.simulate,
+        PathBuf::from(args.js_dir),
         user_info,
         gql.clone(),
-        BASE_URL,
         ws_tx,
         Arc::new(AnalyticsWrapper::new(analytics)),
         analytics_tx,
+        api::get_spade_info(
+            #[cfg(test)]
+            "",
+        )
+        .await?,
     )?));
 
     let pubsub = spawn(pubsub::PubSub::run(ws_rx, pubsub_data.clone(), gql));
@@ -246,4 +264,13 @@ async fn main() -> Result<()> {
     ws_pool.await?;
 
     Ok(())
+}
+
+async fn parse_tokens_json(token: &str) -> Result<common::twitch::auth::Token> {
+    serde_json::from_str(
+        &fs::read_to_string(token)
+            .await
+            .context("Reading tokens file")?,
+    )
+    .context("Parsing tokens file")
 }

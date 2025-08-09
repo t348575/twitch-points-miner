@@ -1,5 +1,5 @@
 use eyre::{eyre, Result};
-use rand::distributions::{Alphanumeric, DistString};
+use rand::distr::{Alphanumeric, SampleString};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use strum_macros::EnumDiscriminants;
@@ -438,7 +438,7 @@ impl GqlRequest {
                     event_id: event_id.to_owned(),
                     outcome_id: outcome_id.to_owned(),
                     points,
-                    transaction_id: Alphanumeric.sample_string(&mut rand::thread_rng(), 32),
+                    transaction_id: Alphanumeric.sample_string(&mut rand::rng(), 32),
                 },
             }),
         }

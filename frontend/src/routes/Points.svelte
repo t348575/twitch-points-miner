@@ -23,7 +23,7 @@
   import * as Select from "$lib/components/ui/select";
   import type { Selected } from "bits-ui";
   import { get_timeline, streamers, type Streamer } from "../common";
-  let margin = { top: 50 };
+  let margin = { top: 50, right: 50 };
 
   let streamers_name: Streamer[] = [];
   let selected_streamers: Streamer[] = [];

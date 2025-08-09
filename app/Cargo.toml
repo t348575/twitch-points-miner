@@ -1,42 +1,44 @@
 [package]
 name = "twitch-points-miner"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 resolver = "2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1", features = ["full"] }
-indexmap = { version = "2.2", features = ["serde"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "chrono"] }
-twitch_api = { features = ["tpm", "utoipa"], default-features = false, git = "https://github.com/t348575/twitch_api", branch = "hidden_pubsubs" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+indexmap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+twitch_api = { workspace = true, features = ["tpm", "utoipa"] }
 clap = { version = "4.5", features = ["derive", "std", "help"], default-features = false }
-eyre = "0.6"
-rand = "0.8"
+eyre.workspace = true
+rand.workspace = true
 serde_yaml = "0.9"
 chrono = { version = "0.4", features = ["serde"] }
-axum = "0.7"
-libsqlite3-sys = { version = "0.28", features = ["bundled"], default-features = false }
+axum.workspace = true
+libsqlite3-sys = { version = "0.35", features = ["bundled"], default-features = false }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 diesel = { version = "2", features = ["sqlite", "chrono"] }
 diesel_migrations = { version = "2", features = ["sqlite"] }
-thiserror = "1"
-utoipa = { version = "4", features = ["axum_extras", "chrono"] }
-utoipa-swagger-ui = { version = "6", features = ["axum"] }
-tower-http = { version = "0.5", features = ["trace", "cors", "fs"] }
+thiserror = "2"
+utoipa = { workspace = true, features = ["axum_extras", "chrono"] }
+utoipa-swagger-ui = { version = "9", features = ["axum", "reqwest"] }
+tower-http = { workspace = true, features = ["trace", "cors", "fs"] }
 tracing-appender = "0.2"
-flume = "0.11"
+flume.workspace = true
 common = { path = "../common", features = ["web_api"] }
-http = "1.1.0"
+http.workspace = true
 ansi-to-html = "0.2"
+validator.workspace = true
 
 [dev-dependencies]
 common = { path = "../common", features = ["web_api", "testing"] }
-rstest = "0.19"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+rstest.workspace = true
+reqwest.workspace = true
 
 [[bin]]
 name = "twitch-points-miner"

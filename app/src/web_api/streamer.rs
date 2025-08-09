@@ -19,23 +19,23 @@ use thiserror::Error;
 use twitch_api::{pubsub::predictions::Event, types::UserId};
 use utoipa::ToSchema;
 
-use crate::{make_paths, sub_error};
+use crate::{make_paths, sub_error, utoipa_name_schema};
 
 use super::{ApiError, ApiState, RouterBuild, WebApiError};
 
 pub fn build(state: ApiState, token: Arc<Token>) -> RouterBuild {
     let routes = Router::new()
         .route("/live", get(live_streamers))
-        .route("/mine/:streamer", put(mine_streamer))
-        .route("/mine/:streamer/", delete(remove_streamer))
-        .route("/:streamer", get(streamer))
+        .route("/mine/{streamer}", put(mine_streamer))
+        .route("/mine/{streamer}/", delete(remove_streamer))
+        .route("/{streamer}", get(streamer))
         .layer(Extension(token))
         .with_state(state);
 
     let schemas = vec![
-        MineStreamer::schema(),
-        ConfigType::schema(),
-        LiveStreamer::schema(),
+        MineStreamer::name_schema(),
+        ConfigType::name_schema(),
+        LiveStreamer::name_schema(),
     ];
 
     let paths = make_paths!(
@@ -89,6 +89,7 @@ struct LiveStreamer {
     id: i32,
     state: StreamerState,
 }
+utoipa_name_schema!(LiveStreamer);
 
 #[utoipa::path(
     get,
@@ -115,6 +116,7 @@ async fn live_streamers(State(data): State<ApiState>) -> Json<Vec<LiveStreamer>>
 struct MineStreamer {
     config: ConfigType,
 }
+utoipa_name_schema!(MineStreamer);
 
 #[utoipa::path(
     put,

@@ -1,4 +1,4 @@
-use std::{io::SeekFrom, sync::Arc};
+use std::{borrow::Cow, io::SeekFrom, sync::Arc};
 
 use axum::{
     extract::{Query, State},
@@ -9,7 +9,7 @@ use axum::{
     Json, Router,
 };
 use common::{
-    config::{filters::Filter, strategy::*, PredictionConfig, StreamerConfig},
+    config::{filters::Filter, strategy::*, *},
     twitch::auth::Token,
     types::*,
 };
@@ -18,6 +18,7 @@ use serde::Deserialize;
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncSeekExt, BufReader},
+    net::TcpListener,
     sync::RwLock,
 };
 use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
@@ -44,7 +45,7 @@ mod streamer;
 type ApiState = Arc<RwLock<PubSub>>;
 type RouterBuild = (
     Router,
-    Vec<(&'static str, RefOr<Schema>)>,
+    Vec<(Cow<'static, str>, RefOr<Schema>)>,
     Vec<(String, PathItem)>,
 );
 
@@ -57,10 +58,25 @@ macro_rules! make_paths {
                 $(
                     (
                         $path::path(),
-                        $path::path_item(None)
+                        utoipa::openapi::PathItem::from_http_methods($path::methods(), $path::operation())
                     ),
                 )*
             ]
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! utoipa_name_schema {
+    ($type:ty) => {
+        impl $type {
+            pub fn name_schema() -> (
+                std::borrow::Cow<'static, str>,
+                utoipa::openapi::RefOr<utoipa::openapi::Schema>,
+            ) {
+                use utoipa::{PartialSchema, ToSchema};
+                (Self::name(), Self::schema())
+            }
         }
     };
 }
@@ -78,7 +94,7 @@ pub async fn get_api_server(
     token: Arc<Token>,
     analytics_db: &str,
     log_path: Option<String>,
-) -> Result<Serve<Router, Router>> {
+) -> Result<Serve<TcpListener, Router, Router>> {
     #[derive(OpenApi)]
     #[openapi(
         paths(
@@ -88,7 +104,7 @@ pub async fn get_api_server(
         components(
             schemas(
                 PubSub, StreamerState, StreamerConfigRefWrapper, ConfigTypeRef, StreamerConfig, PredictionConfig, StreamerInfo, Event,
-                Filter, Strategy, UserId, Game, Detailed, Timestamp, DefaultPrediction, DetailedOdds, Points, OddsComparisonType, LogQuery
+                Filter, Strategy, UserId, Game, Detailed, Timestamp, DefaultPrediction, DetailedOdds, Points, OddsComparisonType, LogQuery, External, ExternalType
             ),
         ),
         tags(
@@ -129,7 +145,7 @@ pub async fn get_api_server(
         openapi.paths.paths.insert(p.0, p.1);
     }
     for s in schemas {
-        components.schemas.insert(s.0.to_owned(), s.1);
+        components.schemas.insert(s.0.to_string(), s.1);
     }
 
     #[allow(unused_mut)]
@@ -143,7 +159,7 @@ pub async fn get_api_server(
 
     let router = Router::new()
         .merge(SwaggerUi::new("/docs").url("/docs/openapi.json", openapi))
-        .nest_service("/", ServeDir::new("dist"))
+        .fallback_service(ServeDir::new("dist"))
         .nest("/api", api)
         .layer(CorsLayer::very_permissive())
         .layer(TraceLayer::new_for_http());

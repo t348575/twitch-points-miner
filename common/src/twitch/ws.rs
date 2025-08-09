@@ -9,7 +9,7 @@ use futures_util::{
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
 };
-use rand::distributions::{Alphanumeric, DistString};
+use rand::distr::{Alphanumeric, SampleString};
 use serde_json::json;
 use tokio::{
     net::TcpStream,
@@ -120,8 +120,7 @@ impl WsPool {
                     let topic_already_exists = self
                         .connections
                         .iter()
-                        .map(|x| x.topics.clone())
-                        .flatten()
+                        .flat_map(|x| x.topics.clone())
                         .find(|x| x.0.eq(&topic));
                     if topic_already_exists.is_none() {
                         self.listen_command(topic).await
@@ -181,7 +180,7 @@ impl WsPool {
                 if state.last_update.elapsed() > Duration::from_secs(60) {
                     if let Err(err) = conn
                         .writer
-                        .send(Message::Text(json!({"type": "PING"}).to_string()))
+                        .send(Message::Text(json!({"type": "PING"}).to_string().into()))
                         .await
                     {
                         warn!("Connection closed {:#?}", err);
@@ -311,7 +310,7 @@ impl WsPool {
         }));
 
         writer
-            .send(Message::Text(json!({"type": "PING"}).to_string()))
+            .send(Message::Text(json!({"type": "PING"}).to_string().into()))
             .await?;
 
         let conn = WsConn {
@@ -423,12 +422,12 @@ pub async fn remove_streamer(ws_tx: &Sender<Request>, channel_id: u32) -> Result
 impl WsConn {
     /// Returns the nonce
     async fn listen_topic(&mut self, topic: &Topics) -> Result<String> {
-        let nonce = Alphanumeric.sample_string(&mut rand::thread_rng(), 30);
+        let nonce = Alphanumeric.sample_string(&mut rand::rng(), 30);
         let msg = listen_command(&[topic.clone()], self.access_token.as_str(), nonce.as_str())
             .context("Generate listen command")?;
         trace!("{msg}");
         self.writer
-            .send(Message::Text(msg))
+            .send(Message::Text(msg.into()))
             .await
             .context("Send WS message")?;
         Ok(nonce)
@@ -436,12 +435,12 @@ impl WsConn {
 
     /// Returns the nonce
     async fn unlisten_topic(&mut self, topic: &Topics) -> Result<()> {
-        let nonce = Alphanumeric.sample_string(&mut rand::thread_rng(), 30);
+        let nonce = Alphanumeric.sample_string(&mut rand::rng(), 30);
         let msg = unlisten_command(&[topic.clone()], nonce.as_str())
             .context("Generate listen command")?;
         trace!("{msg}");
         self.writer
-            .send(Message::Text(msg))
+            .send(Message::Text(msg.into()))
             .await
             .context("Send WS message")?;
         Ok(())

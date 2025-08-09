@@ -1,11 +1,13 @@
 import createClient from "openapi-fetch";
 import type { components, paths } from "./api";
-import { writable } from "svelte/store";
+import { derived, get, writable, type Writable, type Unsubscriber } from "svelte/store";
+import type { Selected } from "bits-ui";
+import type { ObjectSetter } from "@felte/common";
 
 export const streamers = writable<Streamer[]>([]);
 
 const baseUrl = import.meta.env.DEV
-  ? "http://localhost:3000"
+  ? "http://wsl.lan:3000"
   : window.location.origin;
 const client = createClient<paths>({
   baseUrl,
@@ -26,7 +28,71 @@ export interface ValidateStrategy {
 export interface FilterType {
   value: string;
   label: string;
-  quantity: number;
+  data: any;
+}
+
+export interface PresetList {
+  [key: string]: {
+    label: string;
+    data: components["schemas"]["StreamerConfig"];
+  };
+}
+
+export function asSelected<T>(item: T, label: string | undefined): Selected<T> {
+  return { value: item, label };
+}
+
+export function typedObjectKeys<T extends object>(object: T) {
+  return Object.keys(object) as (keyof typeof object)[];
+}
+
+export function isIterable(x: unknown): boolean {
+  // @ts-ignore
+  return !!x?.[Symbol.iterator];
+}
+
+export type NestedObject = { [key: string]: any };
+export type FlattenedEntry = { key: string; value: string };
+
+export function transformErrors(
+  obj: NestedObject,
+  parentKey: string = "",
+  sep: string = ".",
+): FlattenedEntry[] {
+  const items: FlattenedEntry[] = [];
+
+  if (obj === null || obj === undefined) {
+    return items;
+  }
+
+  for (const [key, value] of Object.entries(obj)) {
+    const newKey = parentKey ? `${parentKey}${sep}${key}` : key;
+
+    if (value === null) {
+      continue; // Ignore null values
+    } else if (typeof value === "object" && !isIterable(value)) {
+      items.push(...transformErrors(value, newKey, sep));
+    } else if (value.length > 0) {
+      items.push({ key: newKey, value: String(value) });
+    }
+  }
+
+  return items;
+}
+
+export function getObjectByPath(obj: NestedObject, path: string): any {
+  const keys = path.split(".");
+  let current: any = obj;
+
+  for (const key of keys) {
+    if (current && current.hasOwnProperty(key)) {
+      current = current[key];
+    } else {
+      return undefined;
+    }
+  }
+
+  return current;
 }
 
 export async function get_streamers(): Promise<Streamer[]> {
@@ -248,5 +314,10 @@ export async function get_logs(
   const res = await fetch(
     `${baseUrl}/api/logs?page=${page}&per_page=${page_size}`,
   );
+  return await res.text();
+}
+
+export async function get_external_file(file: string): Promise<string> {
+  const res = await fetch(`${baseUrl}/api/config/external-file/${file}`);
   return await res.text();
 }

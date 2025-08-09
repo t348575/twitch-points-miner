@@ -9,6 +9,8 @@ use diesel::{
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
+use crate::utoipa_name_schema;
+
 #[derive(
     Queryable, Identifiable, Selectable, Insertable, Debug, PartialEq, Clone, Serialize, Deserialize,
 )]
@@ -38,6 +40,7 @@ pub struct Point {
     pub points_info: PointsInfo,
     pub created_at: NaiveDateTime,
 }
+utoipa_name_schema!(Point);
 
 #[derive(
     Debug, Clone, Deserialize, Serialize, PartialEq, FromSqlRow, AsExpression, utoipa::ToSchema,
@@ -50,12 +53,14 @@ pub enum PointsInfo {
     /// prediction event id
     Prediction(String, i32),
 }
+utoipa_name_schema!(PointsInfo);
 
 #[derive(
     Debug, Clone, Deserialize, Serialize, PartialEq, FromSqlRow, AsExpression, utoipa::ToSchema,
 )]
 #[diesel(sql_type = Text)]
 pub struct Outcomes(pub Vec<Outcome>);
+utoipa_name_schema!(Outcomes);
 
 #[derive(
     Debug, Clone, Deserialize, Serialize, PartialEq, FromSqlRow, AsExpression, utoipa::ToSchema,
@@ -67,6 +72,7 @@ pub struct Outcome {
     pub total_points: i64,
     pub total_users: i64,
 }
+utoipa_name_schema!(Outcome);
 
 #[derive(
     Debug, Clone, Deserialize, Serialize, PartialEq, FromSqlRow, AsExpression, utoipa::ToSchema,
@@ -76,6 +82,7 @@ pub enum PredictionBetWrapper {
     None,
     Some(PredictionBet),
 }
+utoipa_name_schema!(PredictionBetWrapper);
 
 #[derive(
     Debug, Clone, Deserialize, Serialize, PartialEq, FromSqlRow, AsExpression, utoipa::ToSchema,
@@ -85,6 +92,7 @@ pub struct PredictionBet {
     pub outcome_id: String,
     pub points: u32,
 }
+utoipa_name_schema!(PredictionBet);
 
 #[derive(
     Queryable,
@@ -112,6 +120,7 @@ pub struct Prediction {
     pub created_at: NaiveDateTime,
     pub closed_at: Option<NaiveDateTime>,
 }
+utoipa_name_schema!(Prediction);
 
 impl From<Vec<twitch_api::pubsub::predictions::Outcome>> for Outcomes {
     fn from(value: Vec<twitch_api::pubsub::predictions::Outcome>) -> Self {

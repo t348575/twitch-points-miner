@@ -36,6 +36,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/config/external-file/{file}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_external_file"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/config/presets": {
         parameters: {
             query?: never;
@@ -269,15 +285,15 @@ export interface components {
         };
         Detailed: {
             default: components["schemas"]["DefaultPrediction"];
-            detailed?: components["schemas"]["DetailedOdds"][] | null;
+            detailed: components["schemas"]["DetailedOdds"][];
         };
         DetailedOdds: {
-            _type: components["schemas"]["OddsComparisonType"];
             /** Format: double */
             attempt_rate: number;
             points: components["schemas"]["Points"];
             /** Format: double */
             threshold: number;
+            type: components["schemas"]["OddsComparisonType"];
         };
         /** @description Event */
         Event: {
@@ -302,6 +318,12 @@ export interface components {
             /** @description Winning outcome ID */
             winning_outcome_id?: string | null;
         };
+        External: {
+            data: string;
+            type: components["schemas"]["ExternalType"];
+        };
+        /** @enum {string} */
+        ExternalType: "Inline" | "File";
         Filter: {
             /** Format: int32 */
             TotalUsers: number;
@@ -311,6 +333,8 @@ export interface components {
         } | {
             /** Format: double */
             DelayPercentage: number;
+        } | {
+            External: components["schemas"]["External"];
         };
         Game: {
             id: string;
@@ -409,15 +433,17 @@ export interface components {
             watching: components["schemas"]["StreamerState"][];
         };
         Strategy: {
-            detailed: components["schemas"]["Detailed"];
+            Detailed: components["schemas"]["Detailed"];
+        } | {
+            External: components["schemas"]["External"];
         };
         StreamerConfig: {
             follow_raid: boolean;
             prediction: components["schemas"]["PredictionConfig"];
         };
         StreamerConfigRefWrapper: {
-            _type: components["schemas"]["ConfigTypeRef"];
             config: components["schemas"]["StreamerConfig"];
+            type: components["schemas"]["ConfigTypeRef"];
         };
         StreamerInfo: {
             broadcastId?: components["schemas"]["UserId"] | null;
@@ -501,6 +527,29 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TimelineResult"][];
+                };
+            };
+        };
+    };
+    get_external_file: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Name of the file to retrieve */
+                file: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successfully retrieved external file */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
                 };
             };
         };

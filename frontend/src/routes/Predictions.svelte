@@ -15,7 +15,6 @@
   } from "../common";
   import { get } from "svelte/store";
   import type { components } from "../api";
-  import type { Selected } from "bits-ui";
   import { RefreshCcw } from "lucide-svelte";
 
   interface StreamerPrediction {
@@ -27,31 +26,42 @@
   type PredictionType = (components["schemas"]["Event"] & boolean) | undefined;
 
   let streamers_name: Streamer[] = [];
-  let live_streamers: StreamerPrediction[] = [];
-  let selected_streamer_for_prediction: StreamerPrediction | undefined;
-  let pred_total_points = 0;
-  let prediction_made: components["schemas"]["Prediction"] | null = null;
-  let prediction: PredictionType;
-  let outcome: string | undefined;
-  let prediction_points: undefined | string = undefined;
-  let error_message: undefined | string = undefined;
-  let prediction_time_up = false;
-  let time_left = 0;
+  let live_streamers: StreamerPrediction[] = $state([]);
+  let selected_streamer_for_prediction: number | undefined = $state();
+  let pred_total_points = $state(0);
+  let prediction_made: components["schemas"]["Prediction"] | null = $state(null);
+  let prediction: PredictionType = $state();
+  let outcome: string | undefined = $state();
+  let prediction_points: undefined | string = $state();
+  let error_message: undefined | string = $state();
+  let prediction_time_up = $state(false);
+  let time_left = $state(0);
   let interval: number | undefined;
 
-  $: if (prediction) {
-    if (interval) {
-      clearInterval(interval)
+  $effect(() => {
+    if (!prediction) {
+      if (interval) clearInterval(interval);
+      time_left = 0;
+      return;
     }
 
-    const func = () => {
-      const temp = (new Date(prediction.created_at).getTime() + (prediction.prediction_window_seconds * 1000) - new Date().getTime()) / 1000
-      time_left = Math.floor(temp)
-    };
-    func()
+    if (interval) clearInterval(interval);
 
-    interval = setInterval(func, 1000)
-  }
+    const tick = () => {
+      const deadline =
+        new Date(prediction.created_at).getTime() +
+        prediction.prediction_window_seconds * 1000;
+
+      time_left = Math.max(0, Math.floor((deadline - Date.now()) / 1000));
+    };
+
+    tick();
+    interval = setInterval(tick, 1000) as unknown as number;
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  });
 
   onDestroy(() => {
     if (interval) {
@@ -59,7 +69,7 @@
     }
   })
 
-  $: make_prediction_class = `flex flex-col justify-center items-center ${live_streamers.length == 0 ? "opacity-25 pointer-events-none" : ""}`;
+  const make_prediction_class = $derived(() => `flex flex-col justify-center items-center ${live_streamers.length === 0 ? "opacity-25 pointer-events-none" : ""}`);
 
   onMount(async () => {
     streamers_name = get(streamers);
@@ -82,46 +92,54 @@
       }));
 
     if (selected_streamer_for_prediction) {
-      await select_streamer_for_prediction(selected_streamer_for_prediction);
+      select_streamer_for_prediction();
     }
   }
 
-  async function select_streamer_for_prediction(
-    v: Selected<number> | undefined,
-  ) {
-    selected_streamer_for_prediction = v as StreamerPrediction;
+  const trigger_selected_streamer = $derived((() => {
+    if (!selected_streamer_for_prediction) return "Select streamer";
+    return (
+      live_streamers.find(a => a.value === selected_streamer_for_prediction)?.label ??
+      "Select streamer"
+    );
+  })());
 
-    if (v == undefined) {
-      return;
-    }
+  $effect(select_streamer_for_prediction);
 
-    const l = live_streamers.find((a) => v.value == a.value);
-    if (l) {
+  function select_streamer_for_prediction() {
+    if (!selected_streamer_for_prediction) return;
+
+    let cancelled = false;
+    (async (id: number) => {
       prediction = undefined;
       prediction_made = null;
-      const preds: string[] = Object.keys(l.streamer.state.predictions);
-      if (preds.length == 0) {
-        return;
-      }
 
-      const preds_list = l.streamer.state.predictions[
-        preds[0] as string
-      ] as PredictionType[];
-      prediction = preds_list[0];
+      const l = live_streamers.find(a => a.value === id);
+      if (!l) return;
 
-      prediction_time_up = (new Date(prediction.created_at).getTime() + (prediction.prediction_window_seconds * 1000) - new Date().getTime()) / 1000 < 0;
+      const preds = Object.keys(l.streamer.state.predictions);
+      if (!preds.length) return;
+
+      const list = l.streamer.state.predictions[preds[0] as string] as PredictionType[];
+      const first = list[0];
+      if (!first || cancelled) return;
+
+      prediction = first;
+
+      const deadline =
+        new Date(first.created_at).getTime() + first.prediction_window_seconds * 1000;
+      prediction_time_up = deadline - Date.now() < 0;
+
       pred_total_points =
-        prediction?.outcomes.reduce(
-          (n, { total_points }) => (n += total_points),
-          0,
-        ) || pred_total_points;
-      if (preds_list[1]) {
-        prediction_made = await get_last_prediction(
-          v.value,
-          preds_list[0]?.id as string,
-        );
+        first.outcomes.reduce((n, { total_points }) => n + total_points, 0);
+
+      if (list[1]) {
+        const last = await get_last_prediction(id, first.id as string);
+        if (!cancelled) prediction_made = last;
       }
-    }
+    })(selected_streamer_for_prediction);
+
+    return () => { cancelled = true; };
   }
 
   function choose_outcome(id: string | undefined) {
@@ -144,7 +162,7 @@
     try {
       await place_bet_streamer(
         live_streamers.find(
-          (a) => a.value == selected_streamer_for_prediction?.value,
+          (a) => a.value == selected_streamer_for_prediction,
         )?.streamer.state.info.channelName as string,
         event_id,
         outcome_id,
@@ -170,23 +188,19 @@
           {live_streamers.length == 0 ? "No streamers live" : "Make prediction"}
         </p>
       </Card.Header>
-      <Card.Content class={make_prediction_class}>
+      <Card.Content class={make_prediction_class()}>
         <div class="w-1/2 flex flex-row">
-          <Select.Root
-            selected={selected_streamer_for_prediction}
-            onSelectedChange={select_streamer_for_prediction}
-          >
-            <Select.Trigger>
-              <Select.Value placeholder="Streamer" />
-            </Select.Trigger>
+          <Select.Root type="single" bind:value={selected_streamer_for_prediction}>
+            <Select.Trigger class="w-full">{trigger_selected_streamer}</Select.Trigger>
             <Select.Content>
               {#each live_streamers as s}
-                <Select.Item value={s.value}>{s.label}</Select.Item>
+                <Select.Item value={s.value} label={s.label} class="rounded-sm px-2 py-1.5 text-sm data-[highlighted]:bg-muted data-[highlighted]:text-foreground hover:bg-muted"></Select.Item>
               {/each}
             </Select.Content>
           </Select.Root>
+
           <Button
-            on:click={refresh_live_streamers}
+            onclick={refresh_live_streamers}
             variant="outline"
             size="icon"
             class="self-center ml-2"
@@ -200,7 +214,7 @@
           {#if prediction}
             <p class="text-xl">
               Channel points: {live_streamers.find(
-                (a) => a.value == selected_streamer_for_prediction?.value,
+                (a) => a.value == selected_streamer_for_prediction,
               )?.streamer.state.points}
             </p>
             {#if time_left > 0}
@@ -219,7 +233,7 @@
               <Table.Body>
                 {#each prediction.outcomes as o}
                   <Table.Row
-                    on:click={() => choose_outcome(o.id)}
+                    onclick={() => choose_outcome(o.id)}
                     class={outcome == o.id ? "bg-zinc-700 hover:bg-zinc-700" : ""}
                   >
                     <Table.Cell>{o.title}</Table.Cell>
@@ -249,7 +263,7 @@
           {/if}
           <div class="flex flex-wrap justify-center">
             {#if error_message}
-              <ErrorAlert message={error_message} />
+              <ErrorAlert content={error_message} />
             {/if}
             <Input
               type="number"
@@ -257,11 +271,11 @@
               class="max-w-48 mr-2"
               bind:value={prediction_points}
               max={live_streamers.find(
-                (a) => a.value == selected_streamer_for_prediction?.value,
+                (a) => a.value == selected_streamer_for_prediction,
               )?.streamer.state.points}
               min={0}
             />
-            <Button on:click={place_bet} disabled={outcome == undefined}
+            <Button onclick={place_bet} disabled={outcome == undefined}
               >Make prediction</Button
             >
             <p class="mt-2">

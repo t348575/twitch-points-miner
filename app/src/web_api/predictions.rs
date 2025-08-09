@@ -6,7 +6,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use common::twitch::gql;
+use common::{config::strategy::Points, twitch::gql};
 use eyre::{eyre, Context, ContextCompat};
 use flume::Sender;
 use http::StatusCode;
@@ -19,6 +19,7 @@ use utoipa::ToSchema;
 use crate::{
     analytics::{self, model::*, Analytics, AnalyticsError, AnalyticsWrapper, TimelineResult},
     pubsub::PubSub,
+    utoipa_name_schema,
 };
 use crate::{make_paths, pubsub::prediction_logic, sub_error};
 
@@ -31,23 +32,20 @@ pub fn build(
 ) -> RouterBuild {
     let routes = Router::new()
         .route("/live", get(get_live_prediction))
-        .route("/bet/:streamer", post(make_prediction))
+        .route("/bet/{streamer}", post(make_prediction))
         .with_state((state, analytics, tx));
 
-    #[allow(unused_mut)]
-    let mut schemas = vec![MakePrediction::schema()];
+    let schemas = vec![
+        MakePrediction::name_schema(),
+        Prediction::name_schema(),
+        TimelineResult::name_schema(),
+        Point::name_schema(),
+        Outcomes::name_schema(),
+        PointsInfo::name_schema(),
+        PredictionBetWrapper::name_schema(),
+        PredictionBet::name_schema(),
+    ];
 
-    schemas.extend(vec![
-        Prediction::schema(),
-        TimelineResult::schema(),
-        Point::schema(),
-        Outcomes::schema(),
-        PointsInfo::schema(),
-        PredictionBetWrapper::schema(),
-        PredictionBet::schema(),
-    ]);
-
-    #[allow(unused_mut)]
     let mut paths = make_paths!(__path_make_prediction);
     paths.extend(make_paths!(__path_get_live_prediction));
 
@@ -82,6 +80,7 @@ struct MakePrediction {
     /// The outcome to place the bet on
     outcome_id: String,
 }
+utoipa_name_schema!(MakePrediction);
 
 #[utoipa::path(
     post,
@@ -126,6 +125,7 @@ async fn make_prediction(
     if !event.outcomes.iter().any(|o| o.id == payload.outcome_id) {
         return sub_error!(PredictionError::OutcomeNotFound);
     }
+    let js_dir = state.js_dir.clone();
     drop(state);
 
     let update_placed_state = |mut state: RwLockWriteGuard<PubSub>| {
@@ -154,12 +154,12 @@ async fn make_prediction(
         update_placed_state(data.write().await);
         Ok(StatusCode::CREATED)
     } else {
-        match prediction_logic(&s, &payload.event_id) {
-            Ok(Some((o, p))) => {
+        match prediction_logic(&s, &payload.event_id, &js_dir) {
+            Ok(Some(bet)) => {
                 place_bet(
                     payload.event_id.clone(),
-                    o,
-                    p,
+                    bet.outcome_id,
+                    bet.points,
                     simulate,
                     &streamer,
                     &gql,
