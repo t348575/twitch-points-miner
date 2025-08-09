@@ -1,27 +1,31 @@
 <script lang="ts">
 	import { ScrollArea as ScrollAreaPrimitive } from "bits-ui";
-	import { cn } from "$lib/utils.js";
+	import { cn, type WithoutChild } from "$lib/utils.js";
 
-	type $$Props = ScrollAreaPrimitive.ScrollbarProps & {
-		orientation?: "vertical" | "horizontal";
-	};
-
-	let className: $$Props["class"] = undefined;
-	export let orientation: $$Props["orientation"] = "vertical";
-	export { className as class };
+	let {
+		ref = $bindable(null),
+		class: className,
+		orientation = "vertical",
+		children,
+		...restProps
+	}: WithoutChild<ScrollAreaPrimitive.ScrollbarProps> = $props();
 </script>
 
 <ScrollAreaPrimitive.Scrollbar
+	bind:ref
+	data-slot="scroll-area-scrollbar"
 	{orientation}
 	class={cn(
-		"flex touch-none select-none transition-colors",
-		orientation === "vertical" && "h-full w-2.5 border-l border-l-transparent p-px",
-		orientation === "horizontal" && "h-2.5 w-full border-t border-t-transparent p-px",
+		"flex touch-none select-none p-px transition-colors",
+		orientation === "vertical" && "h-full w-2.5 border-l border-l-transparent",
+		orientation === "horizontal" && "h-2.5 flex-col border-t border-t-transparent",
 		className
 	)}
+	{...restProps}
 >
-	<slot />
+	{@render children?.()}
 	<ScrollAreaPrimitive.Thumb
-		class={cn("relative rounded-full bg-border", orientation === "vertical" && "flex-1")}
+		data-slot="scroll-area-thumb"
+		class="bg-border relative flex-1 rounded-full"
 	/>
 </ScrollAreaPrimitive.Scrollbar>

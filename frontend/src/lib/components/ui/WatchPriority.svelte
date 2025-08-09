@@ -99,7 +99,7 @@
 
 <div>
   <Dialog.Root bind:open={dialog}>
-    <Dialog.Content class="lg:!min-w-[25%] md:!min-w-[100%]">
+    <Dialog.Content class="lg:min-w-[25%]! md:min-w-full!">
       <Dialog.Header>
         <Dialog.Title class="mb-4">{action_title}</Dialog.Title>
       </Dialog.Header>
@@ -116,7 +116,7 @@
                 class="self-center ml-1 flex h-2 w-2 items-center justify-center rounded-full bg-green-600"
               ></div>
             {/if}
-            <div class="flex-grow"></div>
+            <div class="grow"></div>
             <Menu />
           </div>
         </SortableList>

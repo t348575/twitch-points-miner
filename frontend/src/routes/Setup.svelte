@@ -421,7 +421,7 @@
   </div>
 
   <Dialog.Root bind:open={config_dialog}>
-    <Dialog.Content class="lg:!min-w-[50%] md:!min-w-[100%] mt-2">
+    <Dialog.Content class="lg:min-w-[50%]! md:min-w-full! mt-2">
       <Dialog.Header>
         <Dialog.Title class="mb-4">
           {#if view_edit}
@@ -431,7 +431,7 @@
           {/if}
         </Dialog.Title>
       </Dialog.Header>
-      <ScrollArea class="!max-h-[85vh] !min-h-[10vh] w-full">
+      <ScrollArea class="max-h-[85vh]! min-h-[10vh]! w-full">
         <div class="flex flex-col items-center">
           {#if !view_edit}
             {#if add_streamer_alert}
@@ -466,24 +466,24 @@
   </Dialog.Root>
 
   <Dialog.Root bind:open={preset_dialog}>
-    <Dialog.Content class="lg:!min-w-[50%] md:!min-w-[100%]">
+    <Dialog.Content class="lg:min-w-[50%]! md:min-w-full!">
       <Dialog.Header>
         <Dialog.Title>Preset config</Dialog.Title>
       </Dialog.Header>
-      <div class="flex flex-col items-center !max-h-[85vh] !min-h-[10vh]">
+      <div class="flex flex-col items-center max-h-[85vh]! min-h-[10vh]!">
         {#if view_edit}
           <Select.Root bind:selected={preset}>
             <Select.Trigger class="my-2 max-w-xs">
               <Select.Value placeholder="Preset" />
             </Select.Trigger>
-            <Select.Content class="z-[1000]">
+            <Select.Content class="z-1000">
               {#each Object.entries(preset_list) as p}
                 <Select.Item value={p[0]}>{p[1].label}</Select.Item>
               {/each}
             </Select.Content>
           </Select.Root>
         {/if}
-        <ScrollArea class="!max-h-[85vh] !min-h-[10vh] w-full">
+        <ScrollArea class="max-h-[85vh]! min-h-[10vh]! w-full">
           <div class="flex flex-col items-center">
             {#if view_edit}
               {#if preset.value != undefined}

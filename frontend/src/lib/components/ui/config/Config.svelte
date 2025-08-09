@@ -141,7 +141,6 @@
   export async function set_filters_strategy(
     config: components["schemas"]["StreamerConfigRefWrapper"],
   ) {
-    console.log(config);
 
     if ($data.strategy.base === "Specific") {
       const len = $data.strategy.filters.length;
@@ -355,7 +354,7 @@
 
 <div>
   <slot />
-  <form class="flex flex-col m-4 max-w-[100%]" use:form>
+  <form class="flex flex-col m-4 max-w-full" use:form>
     <div class="flex self-center gap-4 mb-4">
       <Label for="follow_raid" class="self-center">Follow raid</Label>
       <Switch
