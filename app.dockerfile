@@ -4,9 +4,12 @@ COPY frontend /frontend
 RUN bun install
 RUN bun run build
 
-FROM t348575/muslrust-chef:1.85.0-stable AS chef
-RUN apt update
-RUN apt install pkg-config libglib2.0-dev curl -y
+FROM rust:1.85.0 AS chef
+RUN cargo install cargo-chef
+RUN apt update && apt install clang wget pkg-config libglib2.0-dev curl -y
+RUN wget https://github.com/rui314/mold/releases/download/v2.33.0/mold-2.33.0-x86_64-linux.tar.gz -O mold.tar.gz
+RUN mkdir mold && tar -xvzf mold.tar.gz -C mold --strip 1
+RUN cp mold/bin/mold /usr/local/bin
 WORKDIR /tpm
 
 FROM chef AS planner
@@ -26,7 +29,7 @@ COPY ["Cargo.toml", "Cargo.lock", "."]
 RUN perl -0777 -i -pe 's/members = \[[^\]]+\]/members = ["app", "common"]/igs' Cargo.toml
 RUN RUSTFLAGS="$RUSTFLAGS" cargo build --release --target x86_64-unknown-linux-gnu
 
-FROM busybox:glibc AS runtime
+FROM ubuntu AS runtime
 COPY --from=frontend /dist /dist
 WORKDIR /
 ENV LOG=info
