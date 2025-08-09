@@ -159,7 +159,7 @@ pub async fn get_api_server(
 
     let router = Router::new()
         .merge(SwaggerUi::new("/docs").url("/docs/openapi.json", openapi))
-        .nest_service("/", ServeDir::new("dist"))
+        .fallback_service(ServeDir::new("dist"))
         .nest("/api", api)
         .layer(CorsLayer::very_permissive())
         .layer(TraceLayer::new_for_http());

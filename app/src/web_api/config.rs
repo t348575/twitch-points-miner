@@ -26,11 +26,11 @@ pub fn build(state: ApiState) -> RouterBuild {
     let routes = Router::new()
         .route("/presets", get(get_presets))
         .route("/presets/", post(add_update_preset))
-        .route("/presets/:name", delete(remove_preset))
-        .route("/streamer/:name", post(update_streamer_config))
+        .route("/presets/{name}", delete(remove_preset))
+        .route("/streamer/{name}", post(update_streamer_config))
         .route("/watch_priority", get(get_watch_priority))
         .route("/watch_priority/", post(update_watch_priority))
-        .route("/external-file/:file", get(get_external_file))
+        .route("/external-file/{file}", get(get_external_file))
         .with_state(state);
 
     let schemas = vec![AddUpdatePreset::name_schema()];

@@ -26,9 +26,9 @@ use super::{ApiError, ApiState, RouterBuild, WebApiError};
 pub fn build(state: ApiState, token: Arc<Token>) -> RouterBuild {
     let routes = Router::new()
         .route("/live", get(live_streamers))
-        .route("/mine/:streamer", put(mine_streamer))
-        .route("/mine/:streamer/", delete(remove_streamer))
-        .route("/:streamer", get(streamer))
+        .route("/mine/{streamer}", put(mine_streamer))
+        .route("/mine/{streamer}/", delete(remove_streamer))
+        .route("/{streamer}", get(streamer))
         .layer(Extension(token))
         .with_state(state);
 

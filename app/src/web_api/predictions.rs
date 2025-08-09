@@ -32,7 +32,7 @@ pub fn build(
 ) -> RouterBuild {
     let routes = Router::new()
         .route("/live", get(get_live_prediction))
-        .route("/bet/:streamer", post(make_prediction))
+        .route("/bet/{streamer}", post(make_prediction))
         .with_state((state, analytics, tx));
 
     let schemas = vec![

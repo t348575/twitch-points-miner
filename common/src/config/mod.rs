@@ -71,6 +71,8 @@ pub enum ConfigType {
     Preset(String),
     Specific(StreamerConfig),
 }
+
+#[cfg(feature = "web_api")]
 impl ConfigType {
     pub fn name_schema() -> (
         std::borrow::Cow<'static, str>,

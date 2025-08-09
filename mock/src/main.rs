@@ -320,7 +320,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<AppState>>) -> Re
                         WsTest::Reconnect => {
                             let mut state = state.lock().await;
                             socket
-                                .send(Message::Text(serde_json::to_string(&Response::Reconnect)?.into()))
+                                .send(Message::Text(
+                                    serde_json::to_string(&Response::Reconnect)?.into(),
+                                ))
                                 .await?;
                             let field = traverse_json(
                                 state.test_stats.get_mut("Reconnect").unwrap(),

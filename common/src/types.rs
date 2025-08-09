@@ -44,6 +44,7 @@ impl StreamerState {
 #[derive(Debug, Default, Clone, Serialize)]
 #[cfg_attr(feature = "web_api", derive(utoipa::ToSchema))]
 pub struct StreamerConfigRef {
+    #[serde(rename = "type")]
     pub _type: ConfigTypeRef,
     pub config: StreamerConfig,
 }

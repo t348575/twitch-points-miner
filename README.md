@@ -1,7 +1,7 @@
 <h1 align="center">twitch-points-miner</h1>
 <p align="center">
   <img alt="Views" src="https://lambda.348575.xyz/repo-view-counter?repo=twitch-points-miner"/>
-  <img alt="Build status" src="https://github.com/t348575/twitch-points-miner/actions/workflows/rust.yml/badge.svg"/>
+  <img alt="Build status" src="https://github.com/t348575/twitch-points-miner/actions/workflows/rust.yml/badge.svg?branch=master"/>
   <img alt="Docker Image Version" src="https://img.shields.io/docker/v/t348575/twitch-points-miner"/>
   <img alt="Docker Pulls" src="https://img.shields.io/docker/pulls/t348575/twitch-points-miner"/>
   <img alt="Docker Image Size" src="https://img.shields.io/docker/image-size/t348575/twitch-points-miner"/>
