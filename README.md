@@ -82,6 +82,7 @@ services:
       - 3000:3000 # Web UI port
     environment:
       - LOG=info
+      - TZ=Europe/Vienna # Change to your specific timezone, see https://en.wikipedia.org/wiki/List_of_tz_database_time_zones#List
 ```
 
 **Note on First Run:** The application requires an interactive terminal for the first-time login. When running for the first time, use the following command to attach your terminal and complete the authentication process:
