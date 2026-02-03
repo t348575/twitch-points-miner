@@ -9,7 +9,7 @@
 
   let text = "";
   let page = 0;
-  let page_size = 30;
+  let page_size = 100;
   onMount(async () => {
     await render_logs();
   });
