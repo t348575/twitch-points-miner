@@ -285,8 +285,8 @@
 </script>
 
 <div class="flex flex-col justify-center items-center">
-  <div class="mb-4 sm:w-3/4 md:w-1/2">
-    <Menubar.Root class="float-right">
+  <div class="mb-4 w-full sm:w-3/4 md:w-1/2 flex justify-center md:justify-end">
+    <Menubar.Root>
       <Menubar.Menu>
         <Menubar.Trigger>Streamer</Menubar.Trigger>
         <Menubar.Content>
@@ -339,8 +339,8 @@
       </Menubar.Menu>
     </Menubar.Root>
   </div>
-  <div class="flex w-full justify-center">
-    <div class="mr-2">
+  <div class="flex flex-col md:flex-row w-full justify-center gap-4">
+    <div class="w-full md:w-auto">
       <Card.Root>
         <Card.Header>
           <Card.Title>Currently watching</Card.Title>
@@ -353,7 +353,7 @@
         </Card.Content>
       </Card.Root>
     </div>
-    <div class="rounded-md border sm:w-3/4 md:w-1/2">
+    <div class="rounded-md border w-full md:w-1/2">
       <Table.Root {...$tableAttrs}>
         <Table.Header>
           {#each $headerRows as headerRow}

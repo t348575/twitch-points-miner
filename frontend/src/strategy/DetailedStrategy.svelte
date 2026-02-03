@@ -91,8 +91,8 @@
     </Alert.Root>
   {/if}
   <p class="text-center">Default odds</p>
-  <div class="grid grid-rows-2 grid-cols-12 gap-1 items-center">
-    <div class="col-span-6 mt-4">
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-2 items-center">
+    <div class="mt-4">
       <label class="text-xs" for="max-threshold">Max threshold</label>
       <Input
         type="number"
@@ -101,7 +101,7 @@
         bind:value={default_odds.max_percentage}
       />
     </div>
-    <div class="col-span-6 mt-4">
+    <div class="mt-0 md:mt-4">
       <label class="text-xs" for="min-threshold">Min threshold</label>
       <Input
         type="number"
@@ -110,7 +110,7 @@
         bind:value={default_odds.min_percentage}
       />
     </div>
-    <div class="col-span-6">
+    <div>
       <label class="text-xs" for="max-value">Max points value</label>
       <Input
         type="number"
@@ -119,7 +119,7 @@
         bind:value={default_odds.points.max_value}
       />
     </div>
-    <div class="col-span-6">
+    <div>
       <label class="text-xs" for="percentage">Points percentage</label>
       <Input
         type="number"

@@ -240,13 +240,13 @@
 
 <div class="flex flex-col">
   <div class="flex flex-col">
-    <div class="flex flex-row">
-      <div class="flex- w-32">
+    <div class="flex flex-col md:flex-row gap-4">
+      <div class="w-full md:w-32 flex flex-col gap-2">
         <Select.Root
           selected={sort_selection}
           onSelectedChange={sort_streamers}
         >
-          <Select.Trigger>
+          <Select.Trigger class="w-full">
             <Select.Value placeholder="Points" />
           </Select.Trigger>
           <Select.Content>
@@ -254,22 +254,24 @@
             <Select.Item value="Ascending">Ascending</Select.Item>
           </Select.Content>
         </Select.Root>
-        {#each streamers_name as s, index}
-          <Button
-            variant={s_selected[index]}
-            class="min-w-full my-2"
-            on:click={() => toggle_select(s)}>{s.name}</Button
-          >
-        {/each}
+        <div class="flex flex-wrap md:flex-col gap-2 md:gap-0">
+          {#each streamers_name as s, index}
+            <Button
+              variant={s_selected[index]}
+              class="flex-1 md:w-full md:my-2"
+              on:click={() => toggle_select(s)}>{s.name}</Button
+            >
+          {/each}
+        </div>
       </div>
-      <div class="flex-1 mx-10">
+      <div class="flex-1 mx-0 md:mx-10 overflow-hidden">
         <div class="flex flex-row m-0">
           <Popover.Root openFocus>
             <Popover.Trigger asChild let:builder>
               <Button
                 variant="outline"
                 class={cn(
-                  "w-[300px] justify-start text-left font-normal",
+                  "w-full max-w-[300px] justify-start text-left font-normal",
                   !currentDate && "text-muted-foreground",
                 )}
                 builders={[builder]}

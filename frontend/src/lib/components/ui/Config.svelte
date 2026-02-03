@@ -172,8 +172,8 @@
       <Switch id="follow-raid" bind:checked={follow_raid} />
       <Label for="follow-raid">Follow raid</Label>
     </div>
-    <div class="flex items-center gap-4 mb-4">
-      Strategy
+    <div class="flex flex-wrap items-center justify-center gap-4 mb-4">
+      <span>Strategy</span>
       <Select.Root bind:selected={strategy} disabled={preset_mode}>
         <Select.Trigger class="w-52">
           <Select.Value placeholder="Strategy type" />
@@ -189,7 +189,7 @@
       </Select.Root>
       {#if strategy.value == "Preset"}
         <Select.Root bind:selected={preset_strategy}>
-          <Select.Trigger class="my-2 max-w-xs">
+          <Select.Trigger class="my-2 w-52">
             <Select.Value placeholder="Preset" />
           </Select.Trigger>
           <Select.Content>
@@ -203,7 +203,7 @@
           selected={strategy_type}
           onSelectedChange={(v) => selected_strategy_change(v)}
         >
-          <Select.Trigger class="w-36">
+          <Select.Trigger class="w-52">
             <Select.Value placeholder="Strategy" />
           </Select.Trigger>
           <Select.Content>
@@ -239,12 +239,12 @@
           <ErrorAlert message={filters_error_message} />
         {/if}
         {#each filters as f, index}
-          <div class="flex m-4 gap-1">
-            <div>
+          <div class="flex flex-col md:flex-row m-4 gap-4 md:gap-1 items-end md:items-center">
+            <div class="w-full md:w-auto">
               <!-- svelte-ignore a11y-label-has-associated-control -->
               <label class="text-xs">Filter type</label>
               <Select.Root bind:selected={f}>
-                <Select.Trigger class="w-48">
+                <Select.Trigger class="w-full md:w-48">
                   <Select.Value placeholder="Filter type" />
                 </Select.Trigger>
                 <Select.Content>
@@ -254,19 +254,19 @@
                 </Select.Content>
               </Select.Root>
             </div>
-            <div>
+            <div class="w-full md:w-auto">
               <!-- svelte-ignore a11y-label-has-associated-control -->
               <label class="text-xs">Value</label>
               <Input
                 type="number"
                 bind:value={f.quantity}
                 placeholder="Value"
-                class="max-w-1/2"
+                class="w-full md:w-32"
               />
             </div>
             <Button
               variant="outline"
-              class="rounded-full w-10 h-10 p-0 ml-1 mt-6"
+              class="rounded-full w-10 h-10 p-0 md:mt-6"
               on:click={() => {
                 filters.splice(index, 1);
                 filters = filters;

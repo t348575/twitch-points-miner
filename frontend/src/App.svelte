@@ -26,17 +26,17 @@
 
 <main class="container min-w-full min-h-full pt-4 font-sans">
   <ModeWatcher />
-  <div class="flex justify-center">
-    <div class="flex justify-start w-full">
-      <div class="bg-muted rounded-md p-1 h-10 inline-flex items-center text-muted-foreground">
+  <div class="flex flex-col-reverse md:flex-row justify-center items-center gap-4 relative md:mb-4">
+    <div class="flex justify-center md:justify-start w-full md:w-auto md:flex-1">
+      <div class="bg-muted rounded-md p-1 h-10 inline-flex items-center text-muted-foreground overflow-x-auto max-w-full">
         <Button variant="ghost" class={tab_class} data-state={$location === '/' ? 'active' : 'inactive'} href="#/">Points</Button>
         <Button variant="ghost" class={tab_class} data-state={$location === '/predictions' ? 'active' : 'inactive'} href="#/predictions">Predictions</Button>
         <Button variant="ghost" class={tab_class} data-state={$location === '/setup' ? 'active' : 'inactive'} href="#/setup">Setup</Button>
         <Button variant="ghost" class={tab_class} data-state={$location === '/logs' ? 'active' : 'inactive'} href="#/logs">Logs</Button>
       </div>
     </div>
-    <h1 class="text-4xl mb-4 w-full text-center">Twitch points miner</h1>
-    <div class="flex justify-end w-full">
+    <h1 class="text-3xl md:text-4xl mb-0 w-full md:w-auto text-center font-bold">Twitch points miner</h1>
+    <div class="flex justify-end w-full md:w-auto md:flex-1 absolute top-0 right-0 md:static p-2 md:p-0">
       <Button
         on:click={toggleMode}
         variant="outline"
