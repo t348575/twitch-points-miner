@@ -3,6 +3,7 @@ use rand::distributions::{Alphanumeric, DistString};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use strum_macros::EnumDiscriminants;
+use tracing::{debug, info, trace, warn};
 use twitch_api::{pubsub, types::UserId};
 
 use super::{CLIENT_ID, DEVICE_ID, USER_AGENT};
@@ -176,7 +177,8 @@ impl Client {
         let arr = json.as_array().unwrap().clone();
         let items = arr
             .into_iter()
-            .map(|mut result| {
+            .enumerate()
+            .map(|(idx, mut result)| {
                 let balance = traverse_json(
                     &mut result,
                     ".data.community.channel.self.communityPoints.balance",
@@ -189,6 +191,12 @@ impl Client {
                     ".data.community.channel.self.communityPoints.availableClaim.id",
                 )
                 .map(|x| x.as_str().unwrap().to_owned());
+
+                debug!(
+                    "Channel {} initialized with {} points",
+                    channel_names.get(idx).unwrap_or(&"Unknown"),
+                    balance
+                );
 
                 (balance, available_claim)
             })
