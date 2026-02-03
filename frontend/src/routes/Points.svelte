@@ -33,11 +33,34 @@
     label: "Descending",
   };
 
+  // Persistent color map for consistent streamer colors
+  const COLORS = [
+    "#6366f1",
+    "#f43f5e",
+    "#10b981",
+    "#f59e0b",
+    "#8b5cf6",
+    "#ec4899",
+    "#14b8a6",
+    "#f97316",
+    "#3b82f6",
+    "#84cc16",
+  ];
+  const streamerColorMap = new Map<number, string>();
+
+  function getStreamerColor(streamerId: number): string {
+    if (!streamerColorMap.has(streamerId)) {
+      const colorIndex = streamerColorMap.size % COLORS.length;
+      streamerColorMap.set(streamerId, COLORS[colorIndex]);
+    }
+    return streamerColorMap.get(streamerId)!;
+  }
+
   streamers.subscribe((s) => {
     streamers_name = s;
     if (streamers_name.length > 0) {
       sort_streamers(sort_selection);
-      selected_streamers = [streamers_name[0] as Streamer];
+      selected_streamers = streamers_name.slice(0, 10) as Streamer[];
     }
   });
 
@@ -45,10 +68,19 @@
     idx: Date;
     value: components["schemas"]["TimelineResult"];
   }
+
+  interface GroupedStreamerData {
+    streamerId: number;
+    streamerName: string;
+    color: string;
+    data: PointData[];
+  }
+
   let timeline: PointData[] = [];
+  let groupedData: GroupedStreamerData[] = [];
   let last_values: { id: number; value: number | undefined }[] = [];
   const x = (d: PointData) => d.idx;
-  let y: ((d: PointData) => number | undefined)[] = [];
+  const y = (d: PointData) => d.value.point.points_value;
   const template = (d: PointData) => {
     let reason = "";
     switch (d.value.point.points_info) {
@@ -78,7 +110,7 @@
       }
     }
 
-    return `Points: ${difference} ${d.value.point.points_value}<br/>Reason: ${reason}<br/>At: ${new Date(d.value.point.created_at).toLocaleString()}`;
+    return `<b>${d.value.point.channel_id}</b><br/>Points: ${difference} ${d.value.point.points_value}<br/>Reason: ${reason}<br/>At: ${new Date(d.value.point.created_at).toLocaleString()}`;
   };
 
   const df = new DateFormatter("en-UK", {
@@ -134,10 +166,10 @@
 
   async function render_timeline() {
     if (selected_streamers.length === 0) {
+      groupedData = [];
       return;
     }
 
-    let idx = 0;
     let from = new Date(
       currentDate?.start?.year,
       currentDate?.start?.month - 1,
@@ -161,7 +193,6 @@
         selected_streamers,
       )
     ).map((a) => {
-      idx++;
       return { idx: new Date(a.point.created_at), value: a };
     });
 
@@ -171,14 +202,23 @@
         .point.points_value,
     }));
 
-    y = selected_streamers.map((a) => {
-      const copied_s: Streamer = JSON.parse(JSON.stringify(a));
-      const lv = get_last_value(copied_s.id);
-      return (d: PointData) =>
-        copied_s.id == d.value.point.channel_id
-          ? d.value.point.points_value
-          : lv;
-    });
+    // Group data by streamer to prevent line interleaving
+    const dataByStreamer = new Map<number, PointData[]>();
+    for (const point of timeline) {
+      const streamerId = point.value.point.channel_id;
+      if (!dataByStreamer.has(streamerId)) {
+        dataByStreamer.set(streamerId, []);
+      }
+      dataByStreamer.get(streamerId)!.push(point);
+    }
+
+    // Build grouped data array with colors
+    groupedData = selected_streamers.map((s) => ({
+      streamerId: s.id,
+      streamerName: s.name,
+      color: getStreamerColor(s.id),
+      data: dataByStreamer.get(s.id) ?? [],
+    }));
   }
 
   function toggle_select(s: Streamer) {
@@ -261,24 +301,45 @@
             </Popover.Content>
           </Popover.Root>
         </div>
-        <VisXYContainer data={timeline} class="mt-4" {margin} height={500}>
+        <VisXYContainer class="mt-4" {margin} height={500}>
           <VisTooltip
             horizontalShift={50}
             verticalShift={50}
             verticalPlacement="top"
           />
-          <VisLine {x} {y} curveType="linear" lineWidth={3} />
+          {#each groupedData as group (group.streamerId)}
+            <VisLine
+              data={group.data}
+              {x}
+              {y}
+              curveType="linear"
+              lineWidth={1}
+              color={group.color}
+            />
+          {/each}
           <VisAxis
             type="x"
             label="Time"
             tickFormat={(t) => new Date(t).toLocaleString()}
             gridLine={false}
             labelMargin={20}
+            data={timeline}
           />
-          <VisAxis type="y" label="Points" />
-          <VisCrosshair {template} hideWhenFarFromPointer={false} {x} {y} />
+          <VisAxis type="y" label="Points" data={timeline} />
+          <VisCrosshair
+            {template}
+            hideWhenFarFromPointer={true}
+            {x}
+            {y}
+            data={timeline}
+          />
         </VisXYContainer>
-        <VisBulletLegend items={selected_streamers} />
+        <VisBulletLegend
+          items={groupedData.map((g) => ({
+            name: g.streamerName,
+            color: g.color,
+          }))}
+        />
       </div>
     </div>
   </div>
