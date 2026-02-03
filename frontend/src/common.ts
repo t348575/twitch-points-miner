@@ -46,6 +46,7 @@ export async function get_streamers(): Promise<Streamer[]> {
     });
   }
 
+  console.log("Fetched streamers:", items);
   return items;
 }
 
