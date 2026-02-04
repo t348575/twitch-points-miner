@@ -35,7 +35,9 @@
         <Button variant="ghost" class={tab_class} data-state={$location === '/logs' ? 'active' : 'inactive'} href="#/logs">Logs</Button>
       </div>
     </div>
-    <h1 class="text-3xl md:text-4xl mb-0 w-full md:w-auto text-center font-bold">Twitch points miner</h1>
+    <h1 class="text-3xl md:text-4xl mb-0 w-full md:w-auto text-center font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-purple-600 dark:from-indigo-400 dark:to-purple-400">
+      Twitch Points Miner
+    </h1>
     <div class="flex justify-end w-full md:w-auto md:flex-1 absolute top-0 right-0 md:static p-2 md:p-0">
       <Button
         on:click={toggleMode}

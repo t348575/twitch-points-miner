@@ -345,11 +345,16 @@
         <Card.Header>
           <Card.Title>Currently watching</Card.Title>
         </Card.Header>
-        <Card.Content>
+        <Card.Content class="flex flex-col gap-2">
           {#each watching as w}
-            <a href={`https://twitch.tv/${w.info.channelName}`} target="_blank">{w.info.channelName}</a>
-            <br />
+            <div class="flex items-center gap-2">
+              <div class="h-2 w-2 rounded-full bg-green-500 animate-pulse"></div>
+              <a href={`https://twitch.tv/${w.info.channelName}`} target="_blank" class="hover:underline font-medium">{w.info.channelName}</a>
+            </div>
           {/each}
+          {#if watching.length === 0}
+            <p class="text-sm text-muted-foreground italic">No streamers currently being watched</p>
+          {/if}
         </Card.Content>
       </Card.Root>
     </div>

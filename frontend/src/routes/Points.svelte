@@ -22,16 +22,55 @@
   import { writable } from "svelte/store";
   import * as Select from "$lib/components/ui/select";
   import type { Selected } from "bits-ui";
-  import { get_timeline, streamers, type Streamer } from "../common";
+  import { onMount } from "svelte";
+  import {
+    get_timeline,
+    streamers,
+    type Streamer,
+    get_watching,
+  } from "../common";
+  import { Tv, Pickaxe, Coins } from "lucide-svelte";
+
   let margin = { top: 50 };
 
   let streamers_name: Streamer[] = [];
   let selected_streamers: Streamer[] = [];
-  let s_selected = streamers_name.map(() => "outline");
+  let watching_now: string[] = [];
+  let points_today = new Map<number, number>();
   let sort_selection: Selected<string> = {
     value: "Descending",
     label: "Descending",
   };
+
+  async function update_status() {
+    const watching = await get_watching();
+    // The backend actually only watches the first 2 live streamers in priority order
+    watching_now = watching.slice(0, 2).map((w) => w.info.channelName);
+  }
+
+  onMount(async () => {
+    await update_status();
+    const interval = setInterval(update_status, 30000);
+    return () => clearInterval(interval);
+  });
+
+  function calculate_points_today(
+    streamerId: number,
+    data: components["schemas"]["TimelineResult"][],
+  ) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayPoints = data.filter(
+      (d) =>
+        new Date(d.point.created_at) >= today &&
+        d.point.channel_id === streamerId,
+    );
+    if (todayPoints.length < 2) return 0;
+    return (
+      todayPoints[todayPoints.length - 1].point.points_value -
+      todayPoints[0].point.points_value
+    );
+  }
 
   // Persistent color map for consistent streamer colors
   const COLORS = [
@@ -133,15 +172,14 @@
   let currentDate: { start: CalendarDate; end: CalendarDate };
 
   $: {
-    if (streamers_name || $value) {
+    if (streamers_name || $value || selected_streamers) {
       currentDate = $value;
-      s_selected = streamers_name.map((a) =>
-        selected_streamers.find((b) => b.id == a.id) == undefined
-          ? ""
-          : "outline",
-      );
       render_timeline();
     }
+  }
+
+  function is_selected(s: Streamer, selected: Streamer[]) {
+    return selected.find((b) => b.id == s.id) !== undefined;
   }
 
   let startValue: DateValue | undefined = undefined;
@@ -219,13 +257,33 @@
       color: getStreamerColor(s.id),
       data: dataByStreamer.get(s.id) ?? [],
     }));
+
+    // Update points today for all streamers
+    const todayMap = new Map<number, number>();
+    for (const s of streamers_name) {
+      const sData = dataByStreamer.get(s.id);
+      if (sData) {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const filtered = sData.filter((d) => d.idx >= today);
+        if (filtered.length >= 2) {
+          todayMap.set(
+            s.id,
+            filtered[filtered.length - 1].value.point.points_value -
+              filtered[0].value.point.points_value,
+          );
+        }
+      }
+    }
+    points_today = todayMap;
   }
 
   function toggle_select(s: Streamer) {
-    const before = selected_streamers.length;
-    selected_streamers = selected_streamers.filter((a) => a.id != s.id);
-    if (before == selected_streamers.length) {
-      selected_streamers.push(s);
+    const isSelected = selected_streamers.some((a) => a.id === s.id);
+    if (isSelected) {
+      selected_streamers = selected_streamers.filter((a) => a.id !== s.id);
+    } else {
+      selected_streamers = [...selected_streamers, s];
     }
   }
 
@@ -241,7 +299,7 @@
 <div class="flex flex-col">
   <div class="flex flex-col">
     <div class="flex flex-col md:flex-row gap-4">
-      <div class="w-full md:w-32 flex flex-col gap-2">
+      <div class="w-full md:w-48 flex flex-col gap-2">
         <Select.Root
           selected={sort_selection}
           onSelectedChange={sort_streamers}
@@ -254,13 +312,44 @@
             <Select.Item value="Ascending">Ascending</Select.Item>
           </Select.Content>
         </Select.Root>
-        <div class="flex flex-wrap md:flex-col gap-2 md:gap-0">
+        <div class="flex flex-wrap md:flex-col gap-2 md:gap-3">
           {#each streamers_name as s, index}
             <Button
-              variant={s_selected[index]}
-              class="flex-1 md:w-full md:my-2"
-              on:click={() => toggle_select(s)}>{s.name}</Button
+              variant="outline"
+              class="flex flex-col items-start gap-1 h-auto py-3 px-4 flex-1 min-w-[140px] md:min-w-0 md:w-full border-2 transition-all hover:scale-[1.02]"
+              style={is_selected(s, selected_streamers) ? `border-color: ${getStreamerColor(s.id)}; background-color: ${getStreamerColor(s.id)}15;` : 'border-color: var(--border);'}
+              on:click={() => toggle_select(s)}
             >
+              <div class="flex items-center justify-between w-full gap-2">
+                <span class="font-bold truncate min-w-0 flex-1 text-left"
+                  >{s.name}</span
+                >
+                <div class="flex gap-1 shrink-0 items-center">
+                  {#if watching_now.includes(s.name)}
+                    <Pickaxe class="h-4 w-4 text-violet-500 animate-mine" />
+                  {:else if s.data.info.live}
+                    <Tv class="h-4 w-4 text-green-500" />
+                  {/if}
+                </div>
+              </div>
+              <div class="flex items-center gap-1 text-xs opacity-80">
+                <Coins class="h-3 w-3" />
+                <span>{s.points.toLocaleString()} total</span>
+              </div>
+              {#if points_today.get(s.id)}
+                <div
+                  class="w-full text-right text-[10px] font-medium text-green-600 dark:text-green-400"
+                >
+                  +{points_today.get(s.id)?.toLocaleString()} today
+                </div>
+              {:else}
+                <div
+                  class="w-full text-[10px] font-medium text-gray-600 dark:text-gray-400"
+                >
+                  --
+                </div>
+              {/if}
+            </Button>
           {/each}
         </div>
       </div>
@@ -315,7 +404,7 @@
               {x}
               {y}
               curveType="linear"
-              lineWidth={1}
+              lineWidth={2}
               color={group.color}
             />
           {/each}
