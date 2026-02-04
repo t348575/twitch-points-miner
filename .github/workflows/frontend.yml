@@ -16,5 +16,8 @@ jobs:
         bun-version: latest
     - run: bun install
       working-directory: frontend
+    - name: Update Browserslist
+      run: bun x update-browserslist-db@latest --yes
+      working-directory: frontend
     - run: bun run build
       working-directory: frontend

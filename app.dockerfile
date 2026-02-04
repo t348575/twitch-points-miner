@@ -2,6 +2,7 @@ FROM oven/bun:slim AS frontend
 WORKDIR /frontend
 COPY frontend /frontend
 RUN bun install
+RUN bun x update-browserslist-db@latest --yes
 RUN bun run build
 
 FROM alpine:latest AS tz
