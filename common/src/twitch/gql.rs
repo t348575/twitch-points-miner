@@ -3,7 +3,7 @@ use rand::distributions::{Alphanumeric, DistString};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use strum_macros::EnumDiscriminants;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug};
 use twitch_api::{pubsub, types::UserId};
 
 use super::{CLIENT_ID, DEVICE_ID, USER_AGENT};
@@ -82,7 +82,10 @@ impl Client {
     }
 
     fn gql_req(&self) -> reqwest::RequestBuilder {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap();
         client
             .post(&self.url)
             .header("Client-Id", CLIENT_ID)
@@ -193,7 +196,7 @@ impl Client {
                 .map(|x| x.as_str().unwrap().to_owned());
 
                 debug!(
-                    "Channel {} initialized with {} points",
+                    "Channel {} currently has {} points",
                     channel_names.get(idx).unwrap_or(&"Unknown"),
                     balance
                 );

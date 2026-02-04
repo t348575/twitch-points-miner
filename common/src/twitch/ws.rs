@@ -370,6 +370,7 @@ impl WsPool {
                 }
             }
             info!("Reconnected with {} topics", added_connection.topics.len());
+            debug!("Topics: {:#?}", added_connection.topics);
             Ok(added_connection)
         }
 
