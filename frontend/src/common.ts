@@ -242,6 +242,23 @@ export async function set_watch_priority(
   }
 }
 
+export async function get_max_watching(): Promise<number> {
+  const { data, error } = await client.GET("/api/config/max_watching");
+  if (error) {
+    throw error;
+  }
+  return data;
+}
+
+export async function set_max_watching(max_watching: number): Promise<void> {
+  const { error } = await client.POST("/api/config/max_watching/", {
+    body: max_watching,
+  });
+  if (error) {
+    throw error;
+  }
+}
+
 export async function get_logs(
   page: number,
   page_size: number,

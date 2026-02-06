@@ -805,7 +805,7 @@ mod watch_stream {
         {
             pubsub.write().await.watching = watch_items.iter().map(|x| x.1.clone()).collect();
         }
-        for (id, streamer) in watch_items.into_iter().take(2) {
+        for (id, streamer) in watch_items.into_iter().take(config.max_watching.unwrap_or(2)) {
             trace!("Watching {}", streamer.info.channel_name);
             api::set_viewership(
                 user_name.clone(),

@@ -1,7 +1,11 @@
+# (Optional) The maximum number of streams to "watch" at once to earn channel points.
+# Defaults to 2 if not specified.
+max_watching: 2
+
 # (Optional) A list of streamer names (as they appear in their twitch URL)
 # to give watch priority to when they are live. The list is ordered from highest priority (first item) to lowest priority (last item).
-# The application can "watch" up to two streams at once to earn channel points.
-# If more than two of your configured streamers are live, this list determines
+# The application can "watch" up to `max_watching` streams at once.
+# If more than `max_watching` of your configured streamers are live, this list determines
 # who gets priority. Streamers not in this list are chosen based on the order
 # they appear in the `streamers` section below.
 watch_priority:

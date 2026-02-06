@@ -28,6 +28,7 @@
     streamers,
     type Streamer,
     get_watching,
+    get_max_watching,
   } from "../common";
   import { Tv, Pickaxe, Coins } from "lucide-svelte";
 
@@ -44,8 +45,9 @@
 
   async function update_status() {
     const watching = await get_watching();
-    // The backend actually only watches the first 2 live streamers in priority order
-    watching_now = watching.slice(0, 2).map((w) => w.info.channelName);
+    const max_watching = await get_max_watching();
+    // The backend actually only watches the first max_watching live streamers in priority order
+    watching_now = watching.slice(0, max_watching).map((w) => w.info.channelName);
   }
 
   onMount(async () => {
@@ -328,7 +330,8 @@
                   {#if watching_now.includes(s.name)}
                     <Pickaxe class="h-4 w-4 text-violet-500 animate-mine" />
                   {:else if s.data.info.live}
-                    <Tv class="h-4 w-4 text-green-500" />
+                    <!-- <Tv class="h-4 w-4 text-green-500" /> -->
+                    <div class="h-2 w-2 rounded-full bg-green-500 animate-pulse"></div>
                   {/if}
                 </div>
               </div>

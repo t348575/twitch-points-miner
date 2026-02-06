@@ -30,12 +30,16 @@
     add_or_update_preset,
     delete_preset,
     get_watching,
+    get_max_watching,
+    set_max_watching,
   } from "../common";
   import { ArrowUpDown, SlidersHorizontal, X } from "lucide-svelte";
   import Config from "../lib/components/ui/Config.svelte";
   import type { components } from "../api";
   import WatchPriority from "../lib/components/ui/WatchPriority.svelte";
   import { ScrollArea } from "$lib/components/ui/scroll-area";
+  import { Label } from "$lib/components/ui/label";
+  import type { Selected } from "bits-ui";
 
   let data = writable<Streamer[]>([]);
 
@@ -43,6 +47,7 @@
   let selected_row_id: string = "";
   selected_row.subscribe((s) => (selected_row_id = s));
   let watching: components["schemas"]["StreamerState"][] = [];
+  let max_watching: number = 2;
 
   const table = createTable(data, {
     sort: addSortBy(),
@@ -75,8 +80,21 @@
 
   onMount(async () => {
     data.set(await get_streamers());
-    watching = (await get_watching()).slice(0, 2);
+    max_watching = await get_max_watching();
+    watching = (await get_watching()).slice(0, max_watching);
   });
+
+  async function update_max_watching_config(val: Selected<number> | undefined) {
+    if (!val) return;
+    try {
+      await set_max_watching(val.value);
+      max_watching = val.value;
+      watching = (await get_watching()).slice(0, max_watching);
+      toast("Max watching updated");
+    } catch (err) {
+      toast(`Failed to update max watching: ${err}`);
+    }
+  }
 
   const { headerRows, pageRows, tableAttrs, tableBodyAttrs, pluginStates } =
     table.createViewModel(columns);
@@ -355,6 +373,29 @@
           {#if watching.length === 0}
             <p class="text-sm text-muted-foreground italic">No streamers currently being watched</p>
           {/if}
+        </Card.Content>
+      </Card.Root>
+      <Card.Root class="mt-4">
+        <Card.Header>
+          <Card.Title>Configuration</Card.Title>
+        </Card.Header>
+        <Card.Content class="flex flex-col gap-4">
+          <div class="flex flex-col gap-2">
+            <Label for="max-watching">Concurrent streams to watch</Label>
+            <Select.Root 
+              selected={{value: max_watching, label: max_watching.toString()}} 
+              onSelectedChange={update_max_watching_config}
+            >
+              <Select.Trigger id="max-watching">
+                <Select.Value placeholder="Select count" />
+              </Select.Trigger>
+              <Select.Content>
+                <Select.Item value={0}>0 (Pause)</Select.Item>
+                <Select.Item value={1}>1</Select.Item>
+                <Select.Item value={2}>2</Select.Item>
+              </Select.Content>
+            </Select.Root>
+          </div>
         </Card.Content>
       </Card.Root>
     </div>
