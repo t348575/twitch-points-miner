@@ -63,11 +63,15 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let log_level = std::env::var("LOG").unwrap_or("warn".to_owned());
+    let tower_level = match log_level.as_str() {
+        "warn" | "error" => log_level.as_str(),
+        _ => "info",
+    };
     let tracing_opts = tracing_subscriber::registry()
         .with(
             EnvFilter::new(format!("twitch_points_miner={log_level}"))
                 .add_directive(format!("common={log_level}").parse()?)
-                .add_directive(format!("tower_http::trace={log_level}").parse()?),
+                .add_directive(format!("tower_http::trace={tower_level}").parse()?),
         )
         .with(get_layer(tracing_subscriber::fmt::layer()));
 
