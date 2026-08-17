@@ -210,7 +210,7 @@ impl Analytics {
             .select(points_value)
             .first(self.conn.as_mut().unwrap());
 
-        let insert_new = || {
+        let mut insert_new = || {
             debug!(
                 "Points changed for channel {}: {} -> {} ({:?})",
                 c_id,
@@ -258,7 +258,7 @@ impl Analytics {
             .select(prediction_id)
             .first::<String>(self.conn.as_mut().unwrap());
 
-        let insert_prediction = |prediction: &Prediction| -> Result<(), AnalyticsError> {
+        let mut insert_prediction = |prediction: &Prediction| -> Result<(), AnalyticsError> {
             debug!(
                 "Recording new prediction: {} - \"{}\"",
                 prediction.prediction_id, prediction.title
