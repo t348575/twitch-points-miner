@@ -73,13 +73,26 @@ pub async fn get_spade_url(streamer: &str, base_url: &str) -> Result<String> {
     {
         Ok(s) => Ok(s),
         Err(_) => {
-            inner(
+            match inner(
                 &page_text,
                 "https://assets.twitch.tv/config/settings.",
                 #[cfg(feature = "testing")]
                 base_url,
             )
-            .await
+            .await {
+                Ok(s) => Ok(s),
+                Err(_) => {
+                    match inner(
+                        &page_text,
+                        "config/settings.",
+                        #[cfg(feature = "testing")]
+                        base_url,
+                    ).await {
+                        Ok(s) => Ok(s),
+                        Err(_) => Ok("https://spade.twitch.tv/".to_owned())
+                    }
+                }
+            }
         }
     }
 }
