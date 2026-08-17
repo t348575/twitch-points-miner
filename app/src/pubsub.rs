@@ -393,7 +393,6 @@ impl PubSub {
                         if self.streamers.contains_key(&claim.channel_id) {
                             debug!("Channel points updated via claim by {} for {}", claim.point_gain.total_points, claim.channel_id);
                             let s = self.streamers.get_mut(&claim.channel_id).unwrap();
-                            s.points = claim.point_gain.total_points as u32;
                             s.last_points_refresh = Instant::now();
                         }
                     }
@@ -591,15 +590,18 @@ impl PubSub {
                 .make_prediction(points_to_bet, event_id, &outcome_id, self.simulate)
                 .await
                 .context("Make prediction")?;
-            let s = self.streamers.get_mut(streamer).unwrap();
-            s.predictions.get_mut(event_id).unwrap().1 = true;
 
-            let channel_id = streamer.as_str().parse::<i32>()?;
             let points = self
                 .gql
                 .get_channel_points(&[s.info.channel_name.as_str()])
                 .await?;
 
+            let s = self.streamers.get_mut(streamer).unwrap();
+            s.predictions.get_mut(event_id).unwrap().1 = true;
+            s.points = points[0].0;
+            s.last_points_refresh = Instant::now();
+
+            let channel_id = streamer.as_str().parse::<i32>()?;
             let event_id = event_id.to_owned();
             self.analytics_tx
                 .send_async(Box::new(move |analytics| {
@@ -854,6 +856,7 @@ mod update_and_claim_points {
     use super::*;
 
     async fn inner(pubsub: &Arc<RwLock<PubSub>>, gql: &gql::Client) -> Result<()> {
+        debug!("update_and_claim_points: checking live streamers");
         let streamer = {
             let reader = pubsub.read().await;
             reader
@@ -870,9 +873,11 @@ mod update_and_claim_points {
             .collect::<Vec<_>>();
 
         if channel_names.is_empty() {
+            debug!("update_and_claim_points: no live streamers");
             return Ok(());
         }
 
+        debug!("update_and_claim_points: fetching points for {:?}", channel_names);
         let points = gql
             .get_channel_points(&channel_names)
             .await
@@ -916,7 +921,7 @@ mod update_and_claim_points {
             let now = Instant::now();
             let mut writer = pubsub.write().await;
             for (_type, points, channel_id) in changes {
-                let edited = writer
+                let _ = writer
                     .analytics
                     .execute(|analytics| {
                         analytics.insert_points_if_updated(
@@ -926,11 +931,9 @@ mod update_and_claim_points {
                         )
                     })
                     .await?;
-                if edited {
-                    let s = writer.streamers.get_mut(&channel_id).unwrap();
-                    s.points = points;
-                    s.last_points_refresh = now
-                }
+                let s = writer.streamers.get_mut(&channel_id).unwrap();
+                s.points = points;
+                s.last_points_refresh = now;
             }
         }
         Ok(())
