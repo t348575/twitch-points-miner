@@ -83,7 +83,7 @@ impl Client {
 
     fn gql_req(&self) -> reqwest::RequestBuilder {
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .unwrap();
         client
