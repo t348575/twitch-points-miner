@@ -497,7 +497,13 @@ async fn ws_reader(
                     }
                     _ => warn!("Unknown response {:#?}", r),
                 },
-                Err(err) => warn!("Failed to parse ws message {:#?} \nmessage {m}", err),
+                Err(err) => {
+                    if m.contains("\"type\":\"points-spent\"") || m.contains("\"type\":\"active-multipliers-updated\"") {
+                        trace!("Unimplemented ws message type: {m}");
+                    } else {
+                        warn!("Failed to parse ws message {:#?} \nmessage {m}", err);
+                    }
+                }
             }
         }
     }
