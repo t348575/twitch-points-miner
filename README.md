@@ -113,6 +113,44 @@ The authentication process is designed to be interactive on the first run and au
 
 Has not been tested on windows, but should work fine
 
+## Development
+
+The easiest way to get a working dev setup is the included devcontainer, which comes with Rust, `diesel_cli`, and Bun preinstalled.
+
+### First-time setup
+
+1. Open the repo in VS Code with the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension installed.
+2. Run **Dev Containers: Reopen in Container**. This builds the container and runs `.devcontainer/post-create.sh`, which installs system packages, updates the Rust toolchain, installs `diesel_cli`, installs frontend dependencies, and does an initial `cargo build`.
+3. Create a `config.yaml` in the repo root (see [example.config.yaml](example.config.yaml)).
+
+### Running the backend
+
+In a devcontainer terminal:
+
+```bash
+cargo run -p twitch-points-miner -- -t data/tokens.json --analytics-db data/analytics.db --log-file data/twitch-points-miner.log
+```
+
+- If `data/tokens.json` does not exist yet, the app starts an interactive Twitch login: it prints a URL to open in your browser to authorize the app. Once confirmed, it writes `data/tokens.json` and continues running.
+- To force a fresh login (e.g. an old token stopped working), move the existing token file out of the way first: `mv data/tokens.json data/tokens.json.bak`.
+- On later runs, the existing `data/tokens.json` is reused automatically and no interactive step is needed.
+- The devcontainer forwards port `3000`, so once running, the web UI is reachable at `http://localhost:3000` without any extra steps.
+
+### Running the frontend dev server (optional)
+
+Only needed if you're actively developing the frontend — the backend already serves the built UI on port `3000`. For live reload while editing frontend code:
+
+```bash
+cd frontend && bun run dev
+```
+
+The devcontainer also forwards port `5173` for this Vite dev server. The `dev` script already passes `--host` so Vite binds to `0.0.0.0`; without it, Vite only binds to `localhost` inside the container, and VS Code's port forwarding can't reach it.
+
+### Port 3000 vs port 5173
+
+- **Port 3000** is the Rust backend. It serves the REST API, and in production also serves the built frontend files directly. Open this if you just want to use the app.
+- **Port 5173** is the Vite dev server, used only when actively developing the frontend. It serves the UI with hot reload, but for API calls, it's hardcoded (in `frontend/src/common.ts`) to still call `http://localhost:3000`. So both servers must be running at once when using port 5173: Vite for the live UI, and the Rust backend for the actual data.
+
 ## Building
 
 ```
