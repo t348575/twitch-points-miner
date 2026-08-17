@@ -1,0 +1,46 @@
+{
+  "name": "Twitch Points Miner",
+  "image": "mcr.microsoft.com/devcontainers/rust:1-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts"
+    },
+    "ghcr.io/shyim/devcontainers-features/bun:0": {
+      "version": "latest"
+    }
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "serayuzgur.crates",
+        "svelte.svelte-vscode",
+        "esbenp.prettier-vscode",
+        "bradlc.vscode-tailwindcss",
+        "ms-azuretools.vscode-docker"
+      ],
+      "settings": {
+        "rust-analyzer.check.command": "clippy",
+        "[rust]": {
+          "editor.defaultFormatter": "rust-lang.rust-analyzer",
+          "editor.formatOnSave": true
+        },
+        "[svelte]": {
+          "editor.defaultFormatter": "svelte.svelte-vscode",
+          "editor.formatOnSave": true
+        }
+      }
+    }
+  },
+  "forwardPorts": [3000, 5173],
+  "mounts": [
+    "source=${localWorkspaceFolder}/data,target=/workspaces/twitch-points-miner/data,type=bind,consistency=cached"
+  ],
+  "remoteEnv": {
+    "TZ": "Europe/Vienna",
+    "LOG": "debug",
+    "RUST_BACKTRACE": "1"
+  }
+}
