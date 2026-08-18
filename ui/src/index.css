@@ -1,0 +1,321 @@
+/*
+ * Global rules that Mantine props cannot express. Everything colour-related
+ * reads from a token defined in theme.ts, so both schemes stay in sync.
+ */
+
+/* ---------------------------------------------------------------- fonts --
+ * Declared by hand rather than importing the @fontsource entrypoints: those
+ * pull in every subset (4.2 MB of woff2 copied into dist) when this app only
+ * ever needs latin. The backend serves dist with ServeDir, often on a LAN with
+ * no internet, so the files must ship with the build - a Google Fonts link
+ * would silently fall back to system-ui, which is what happens today.
+ */
+@font-face {
+  font-family: "Archivo Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  src: url("@fontsource-variable/archivo/files/archivo-latin-wdth-normal.woff2")
+    format("woff2-variations");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 700;
+  src: url("@fontsource-variable/ibm-plex-sans/files/ibm-plex-sans-latin-wght-normal.woff2")
+    format("woff2-variations");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url("@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-500-normal.woff2") format("woff2");
+}
+
+/* ---------------------------------------------------------------- shell -- */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  /* Respect notches on phones */
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  /* A single very low contrast wash, so the panel has depth instead of reading
+     as a flat dead field. The AppShell header and navbar stay flat on purpose. */
+  background-image: var(--tpm-wash);
+  background-attachment: fixed;
+}
+
+/* ------------------------------------------------------------ typography -- */
+.mantine-Title-root {
+  /* The width axis is the whole point of Archivo here; the tight tracking is
+     what stops it reading like another generic grotesque. */
+  font-variation-settings: "wdth" 118;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+.mantine-Title-root[data-order="4"],
+.mantine-Title-root[data-order="5"],
+.mantine-Title-root[data-order="6"] {
+  font-variation-settings: "wdth" 112;
+  letter-spacing: -0.01em;
+}
+
+/* Every figure in this app is either counted or compared, and the countdown
+   reruns once a second. Proportional digits jitter in place and knock columns
+   out of alignment, so anything monospaced gets true tabular figures. */
+code,
+kbd,
+pre,
+samp,
+.mantine-Code-root,
+.tpm-num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.tpm-num {
+  font-family: var(--mantine-font-family-monospace);
+}
+
+/* Headline figures. The hero total is a Text, not a Title, so it would
+   otherwise sit in the body face and miss the display voice entirely. */
+.tpm-figure {
+  font-family: var(--mantine-font-family-headings);
+  font-variation-settings: "wdth" 112;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* ----------------------------------------------------------------- focus -- */
+:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: 2px;
+}
+
+/* -------------------------------------------------------------- nav rail --
+ * Replaces Mantine's filled active block with a rail, which reads as a
+ * position marker rather than a selected button. */
+.mantine-NavLink-root[data-active] {
+  --nl-bg: transparent;
+  background: color-mix(in srgb, var(--mantine-primary-color-filled) 12%, transparent);
+  color: var(--mantine-primary-color-light-color);
+  border-left: 2px solid var(--mantine-primary-color-filled);
+  border-radius: 0 var(--mantine-radius-sm) var(--mantine-radius-sm) 0;
+  font-weight: 550;
+}
+
+.mantine-NavLink-root[data-active]:hover {
+  background: color-mix(in srgb, var(--mantine-primary-color-filled) 18%, transparent);
+}
+
+/* ----------------------------------------------------------------- tabs --
+ * Mantine gives the label `flex: 1`, so in a `grow` list it expands to fill the
+ * tab and the text centres, stranding the icon at the far left. Keep the icon
+ * and its label together at the start instead. */
+.mantine-Tabs-tabLabel {
+  flex: 0 1 auto;
+  text-align: left;
+}
+
+/* ----------------------------------------------------------------- logs --
+ * The ansi output is injected as HTML and is left untouched; this is purely
+ * the surface it sits on. */
+pre {
+  font-family: var(--mantine-font-family-monospace);
+  line-height: 1.45;
+}
+
+.tpm-logs {
+  background: var(--tpm-ground);
+  border: 1px solid var(--tpm-hairline);
+  border-radius: var(--mantine-radius-sm);
+}
+
+/* --------------------------------------------------------------- wordmark --
+ * Brass is a material, and materials catch light unevenly - hence three stops
+ * on an off-axis sweep rather than an even two-stop ramp. */
+.tpm-wordmark {
+  font-family: var(--mantine-font-family-headings);
+  font-variation-settings: "wdth" 116;
+  font-weight: 660;
+  letter-spacing: -0.03em;
+  color: var(--mantine-primary-color-filled);
+  background-image: linear-gradient(100deg, #f0c96b 6%, #d9a13b 48%, #a87a25 96%);
+}
+
+[data-mantine-color-scheme="light"] .tpm-wordmark {
+  background-image: linear-gradient(100deg, #c08a2c 6%, #a87a25 48%, #6f5013 96%);
+}
+
+/* Guarded so the wordmark never vanishes where background-clip is unsupported. */
+@supports (background-clip: text) or (-webkit-background-clip: text) {
+  .tpm-wordmark {
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+}
+
+/* ---------------------------------------------------------------- motion --
+ * Three places only, each reporting something true about a machine that runs
+ * unattended. The resting styles below are also the reduced-motion styles:
+ * animation is layered on top, never the other way round, so turning motion
+ * off can never hide a status. */
+
+/* One clock drives both indicators. */
+:root {
+  --tpm-period: 2400ms;
+}
+
+/* The pickaxe. Points arrive in discrete claims, not smoothly, so it strikes
+   and rests rather than wiggling continuously - a constant wiggle just becomes
+   noise on a dashboard you glance at. The pivot is the handle butt. */
+.tpm-mining {
+  transform-origin: bottom left;
+  animation: tpm-strike var(--tpm-period) cubic-bezier(0.2, 0.8, 0.3, 1) infinite;
+}
+
+/* The live dot. Fading the whole element would dim a status indicator, so the
+   dot stays solid and only the halo travels. */
+.tpm-live {
+  position: relative;
+}
+
+.tpm-live::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--tpm-live) 55%, transparent);
+  opacity: 0;
+  /* Same period and same phase as the strike, so the halo leaves the dot on
+     the beat the pickaxe lands. Both are pinned to a common startTime in
+     StatusIndicators.tsx, so they stay in phase however they mounted. */
+  animation: tpm-ping var(--tpm-period) ease-out infinite;
+}
+
+.tpm-card-link {
+  transition:
+    transform 120ms ease,
+    border-color 120ms ease;
+}
+
+.tpm-card-link:hover,
+.tpm-card-link:focus-visible {
+  transform: translateY(-1px);
+  border-color: var(--mantine-primary-color-filled);
+}
+
+@keyframes tpm-strike {
+  0% {
+    transform: rotate(-18deg);
+  }
+  11% {
+    transform: rotate(26deg);
+  }
+  19% {
+    transform: rotate(-24deg);
+  }
+  27% {
+    transform: rotate(-15deg);
+  }
+  33% {
+    transform: rotate(-18deg);
+  }
+  100% {
+    transform: rotate(-18deg);
+  }
+}
+
+/* The strike lands at 11% of the cycle, so the halo is invisible until then,
+   flashes on impact, and expands away over the next third. */
+@keyframes tpm-ping {
+  0%,
+  10% {
+    transform: scale(1);
+    opacity: 0;
+  }
+  11% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  46%,
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+
+/*
+ * Motion off, meaning intact. The pickaxe holds at its strike angle with a
+ * brass glow rather than reverting to the neutral resting icon, and the dot
+ * keeps the static halo it carries inline - the animation is carrying status,
+ * so it must never be the only thing communicating it.
+ *
+ * Two ways to land here. The OS asking for reduced motion is the default and
+ * needs no JavaScript, so it is already correct on first paint. `data-motion`
+ * is the in-app override: "on" opts back in despite the OS, "off" opts out
+ * regardless of it. Absent means follow the OS.
+ */
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-motion="on"]) .tpm-mining {
+    animation: none;
+    transform: rotate(26deg);
+    filter: drop-shadow(
+      0 0 3px color-mix(in srgb, var(--mantine-primary-color-filled) 55%, transparent)
+    );
+  }
+
+  :root:not([data-motion="on"]) .tpm-live::after {
+    animation: none;
+  }
+
+  :root:not([data-motion="on"]) .tpm-card-link {
+    transition: none;
+  }
+
+  :root:not([data-motion="on"]) .tpm-card-link:hover,
+  :root:not([data-motion="on"]) .tpm-card-link:focus-visible {
+    transform: none;
+  }
+}
+
+:root[data-motion="off"] .tpm-mining {
+  animation: none;
+  transform: rotate(26deg);
+  filter: drop-shadow(
+    0 0 3px color-mix(in srgb, var(--mantine-primary-color-filled) 55%, transparent)
+  );
+}
+
+:root[data-motion="off"] .tpm-live::after {
+  animation: none;
+}
+
+:root[data-motion="off"] .tpm-card-link {
+  transition: none;
+}
+
+:root[data-motion="off"] .tpm-card-link:hover,
+:root[data-motion="off"] .tpm-card-link:focus-visible {
+  transform: none;
+}
