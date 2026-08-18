@@ -828,14 +828,15 @@ mod watch_stream {
     }
 
     pub async fn run(pubsub: Arc<RwLock<PubSub>>, live_event: Receiver<UserId>) {
-        let use_watch_streak = {
-            let reader = pubsub.read().await;
-            reader.config.watch_streak.unwrap_or(true)
-        };
-
         let mut watch_streak = Vec::new();
 
         loop {
+            // Re-read each iteration so the web API can toggle this without a restart
+            let use_watch_streak = {
+                let reader = pubsub.read().await;
+                reader.config.watch_streak.unwrap_or(true)
+            };
+
             if let Err(err) = inner(&pubsub, &mut watch_streak, use_watch_streak, &live_event).await
             {
                 if err.to_string() != "Spade URL not set" {
