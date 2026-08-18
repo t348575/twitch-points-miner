@@ -115,13 +115,31 @@ Has not been tested on windows, but should work fine
 
 ## Development
 
-The easiest way to get a working dev setup is the included devcontainer, which comes with Rust, `diesel_cli`, and Bun preinstalled.
+The easiest way to get a working dev setup is the included devcontainer, which comes with Rust, `diesel_cli`, and Node preinstalled.
 
 ### First-time setup
 
 1. Open the repo in VS Code with the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension installed.
-2. Run **Dev Containers: Reopen in Container**. This builds the container and runs `.devcontainer/post-create.sh`, which installs system packages, updates the Rust toolchain, installs `diesel_cli`, installs frontend dependencies, and does an initial `cargo build`.
+2. Run **Dev Containers: Reopen in Container**. This builds the container and runs `.devcontainer/post-create.sh`, which installs system packages, updates the Rust toolchain, installs `diesel_cli`, installs UI dependencies, and does an initial `cargo build`.
 3. Create a `config.yaml` in the repo root (see [example.config.yaml](example.config.yaml)).
+
+### The `target/` directory
+
+The devcontainer mounts cargo's `target/` as a named docker volume rather than
+through the bind mount. Sharing it with the host causes ownership conflicts —
+artifacts written by one user cannot be replaced by the other, and cargo fails
+with `failed to create file ... Permission denied`. The volume also avoids the
+bind-mount slowdown on the thousands of small files cargo writes.
+
+`post-create.sh` chowns the volume on first creation, because docker creates
+named volumes owned by root.
+
+If you have a host-side `target/` left over from an earlier root-owned build, it
+is now shadowed inside the container and harmless. To reclaim the disk space:
+
+```bash
+sudo rm -rf target
+```
 
 ### Running the backend
 
@@ -138,23 +156,54 @@ cargo run -p twitch-points-miner -- -t data/tokens.json --analytics-db data/anal
 
 ### Running the frontend dev server (optional)
 
-Only needed if you're actively developing the frontend — the backend already serves the built UI on port `3000`. For live reload while editing frontend code:
+Only needed if you're actively developing the frontend — the backend already serves the built UI on port `3000`. For live reload while editing UI code:
 
 ```bash
-cd frontend && bun run dev
+cd ui && npm run dev
 ```
 
-The devcontainer also forwards port `5173` for this Vite dev server. The `dev` script already passes `--host` so Vite binds to `0.0.0.0`; without it, Vite only binds to `localhost` inside the container, and VS Code's port forwarding can't reach it.
+The devcontainer also forwards port `5173` for this Vite dev server. `vite.config.ts` sets `server.host` so Vite binds to `0.0.0.0`; without it, Vite only binds to `localhost` inside the container, and VS Code's port forwarding can't reach it.
+
+The dev server reads the backend URL from `ui/.env.development` (`VITE_API_BASE`, default `http://localhost:3000`). Production builds always call the origin they were served from.
+
+To build the UI the way the backend serves it:
+
+```bash
+cd ui && npm run build   # writes to ../dist, which the backend serves
+```
+
+`dist/` is gitignored, so a fresh clone has nothing for the backend to serve
+until this has run once. `post-create.sh` does it during devcontainer setup;
+re-run it by hand after changing UI code if you are not using the dev server.
 
 ### Port 3000 vs port 5173
 
 - **Port 3000** is the Rust backend. It serves the REST API, and in production also serves the built frontend files directly. Open this if you just want to use the app.
-- **Port 5173** is the Vite dev server, used only when actively developing the frontend. It serves the UI with hot reload, but for API calls, it's hardcoded (in `frontend/src/common.ts`) to still call `http://localhost:3000`. So both servers must be running at once when using port 5173: Vite for the live UI, and the Rust backend for the actual data.
+- **Port 5173** is the Vite dev server, used only when actively developing the frontend. It serves the UI with hot reload, but API calls still go to the backend (`VITE_API_BASE` in `ui/.env.development`). So both servers must be running at once when using port 5173: Vite for the live UI, and the Rust backend for the actual data.
+
+### Frontend layout
+
+The UI lives in `ui/` and is built with Vite, TypeScript, React, Mantine and ECharts.
+
+Linting and formatting use [oxlint](https://oxc.rs/docs/guide/usage/linter) and
+[oxfmt](https://oxc.rs/docs/guide/usage/formatter):
+
+```bash
+cd ui
+npm run lint          # oxlint
+npm run format        # oxfmt, rewrites files
+npm run format:check  # oxfmt, fails if anything is unformatted
+```
+
+CI runs `lint` and `format:check` before the build.
+
+The previous Svelte UI is still in `frontend/` for reference only. It is no longer built by Docker or CI; see `frontend/DEPRECATED.md`.
 
 ## Building
 
 ```
 cargo build --release
+cd ui && npm ci && npm run build
 ```
 
 ## Web UI screenshots

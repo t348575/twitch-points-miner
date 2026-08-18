@@ -3,10 +3,7 @@
   "image": "mcr.microsoft.com/devcontainers/rust:1-bookworm",
   "features": {
     "ghcr.io/devcontainers/features/node:1": {
-      "version": "lts"
-    },
-    "ghcr.io/shyim/devcontainers-features/bun:0": {
-      "version": "latest"
+      "version": "22"
     }
   },
   "postCreateCommand": "bash .devcontainer/post-create.sh",
@@ -16,9 +13,7 @@
         "rust-lang.rust-analyzer",
         "tamasfe.even-better-toml",
         "serayuzgur.crates",
-        "svelte.svelte-vscode",
-        "esbenp.prettier-vscode",
-        "bradlc.vscode-tailwindcss",
+        "oxc.oxc-vscode",
         "ms-azuretools.vscode-docker"
       ],
       "settings": {
@@ -27,8 +22,12 @@
           "editor.defaultFormatter": "rust-lang.rust-analyzer",
           "editor.formatOnSave": true
         },
-        "[svelte]": {
-          "editor.defaultFormatter": "svelte.svelte-vscode",
+        "[typescript]": {
+          "editor.defaultFormatter": "oxc.oxc-vscode",
+          "editor.formatOnSave": true
+        },
+        "[typescriptreact]": {
+          "editor.defaultFormatter": "oxc.oxc-vscode",
           "editor.formatOnSave": true
         }
       }
@@ -36,7 +35,11 @@
   },
   "forwardPorts": [3000, 5173],
   "mounts": [
-    "source=${localWorkspaceFolder}/data,target=/workspaces/twitch-points-miner/data,type=bind,consistency=cached"
+    "source=${localWorkspaceFolder}/data,target=/workspaces/twitch-points-miner/data,type=bind,consistency=cached",
+    // Keep cargo's target/ out of the bind mount: it stops host-built and
+    // container-built artifacts from fighting over ownership, and bind mounts
+    // are slow for the thousands of small files cargo writes.
+    "source=tpm-cargo-target,target=/workspaces/twitch-points-miner/target,type=volume"
   ],
   "remoteEnv": {
     "TZ": "Europe/Vienna",

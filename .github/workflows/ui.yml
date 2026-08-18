@@ -1,23 +1,26 @@
-name: Node.js CI
+name: UI CI
 
 on:
   pull_request:
     branches: [ "master" ]
-defaults:
-  run:
-    working-directory: ./frontend
+    paths:
+      - 'ui/**'
+      - '.github/workflows/ui.yml'
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./ui
     steps:
-    - uses: actions/checkout@v3
-    - uses: oven-sh/setup-bun@v1
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
       with:
-        bun-version: latest
-    - run: bun install
-      working-directory: frontend
-    - name: Update Browserslist
-      run: bun x update-browserslist-db@latest --yes
-      working-directory: frontend
-    - run: bun run build
-      working-directory: frontend
+        node-version: 22
+        cache: npm
+        cache-dependency-path: ui/package-lock.json
+    - run: npm ci
+    - run: npm run lint
+    - run: npm run format:check
+    - run: npm run build

@@ -1,9 +1,10 @@
-FROM oven/bun:slim AS frontend
-WORKDIR /frontend
-COPY frontend /frontend
-RUN bun install
-RUN bun x update-browserslist-db@latest --yes
-RUN bun run build
+FROM node:22-alpine AS frontend
+WORKDIR /ui
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci
+COPY ui .
+# vite.config.ts writes to ../dist, so the output lands at /dist
+RUN npm run build
 
 FROM alpine:latest AS tz
 RUN apk --no-cache add tzdata
