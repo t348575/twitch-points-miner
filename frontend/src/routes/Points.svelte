@@ -22,22 +22,86 @@
   import { writable } from "svelte/store";
   import * as Select from "$lib/components/ui/select";
   import type { Selected } from "bits-ui";
-  import { get_timeline, streamers, type Streamer } from "../common";
+  import { onMount } from "svelte";
+  import {
+    get_timeline,
+    streamers,
+    type Streamer,
+    get_watching,
+    get_max_watching,
+  } from "../common";
+  import { Tv, Pickaxe, Coins } from "lucide-svelte";
+
   let margin = { top: 50 };
 
   let streamers_name: Streamer[] = [];
   let selected_streamers: Streamer[] = [];
-  let s_selected = streamers_name.map(() => "outline");
+  let watching_now: string[] = [];
+  let points_today = new Map<number, number>();
   let sort_selection: Selected<string> = {
     value: "Descending",
     label: "Descending",
   };
 
+  async function update_status() {
+    const watching = await get_watching();
+    const max_watching = await get_max_watching();
+    // The backend actually only watches the first max_watching live streamers in priority order
+    watching_now = watching.slice(0, max_watching).map((w) => w.info.channelName);
+  }
+
+  onMount(async () => {
+    await update_status();
+    const interval = setInterval(update_status, 30000);
+    return () => clearInterval(interval);
+  });
+
+  function calculate_points_today(
+    streamerId: number,
+    data: components["schemas"]["TimelineResult"][],
+  ) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayPoints = data.filter(
+      (d) =>
+        new Date(d.point.created_at) >= today &&
+        d.point.channel_id === streamerId,
+    );
+    if (todayPoints.length < 2) return 0;
+    return (
+      todayPoints[todayPoints.length - 1].point.points_value -
+      todayPoints[0].point.points_value
+    );
+  }
+
+  // Persistent color map for consistent streamer colors
+  const COLORS = [
+    "#6366f1",
+    "#f43f5e",
+    "#10b981",
+    "#f59e0b",
+    "#8b5cf6",
+    "#ec4899",
+    "#14b8a6",
+    "#f97316",
+    "#3b82f6",
+    "#84cc16",
+  ];
+  const streamerColorMap = new Map<number, string>();
+
+  function getStreamerColor(streamerId: number): string {
+    if (!streamerColorMap.has(streamerId)) {
+      const colorIndex = streamerColorMap.size % COLORS.length;
+      streamerColorMap.set(streamerId, COLORS[colorIndex]);
+    }
+    return streamerColorMap.get(streamerId)!;
+  }
+
   streamers.subscribe((s) => {
     streamers_name = s;
     if (streamers_name.length > 0) {
       sort_streamers(sort_selection);
-      selected_streamers = [streamers_name[0] as Streamer];
+      selected_streamers = streamers_name.slice(0, 10) as Streamer[];
     }
   });
 
@@ -45,10 +109,19 @@
     idx: Date;
     value: components["schemas"]["TimelineResult"];
   }
+
+  interface GroupedStreamerData {
+    streamerId: number;
+    streamerName: string;
+    color: string;
+    data: PointData[];
+  }
+
   let timeline: PointData[] = [];
+  let groupedData: GroupedStreamerData[] = [];
   let last_values: { id: number; value: number | undefined }[] = [];
   const x = (d: PointData) => d.idx;
-  let y: ((d: PointData) => number | undefined)[] = [];
+  const y = (d: PointData) => d.value.point.points_value;
   const template = (d: PointData) => {
     let reason = "";
     switch (d.value.point.points_info) {
@@ -78,7 +151,7 @@
       }
     }
 
-    return `Points: ${difference} ${d.value.point.points_value}<br/>Reason: ${reason}<br/>At: ${new Date(d.value.point.created_at).toLocaleString()}`;
+    return `<b>${d.value.point.channel_id}</b><br/>Points: ${difference} ${d.value.point.points_value}<br/>Reason: ${reason}<br/>At: ${new Date(d.value.point.created_at).toLocaleString()}`;
   };
 
   const df = new DateFormatter("en-UK", {
@@ -101,15 +174,14 @@
   let currentDate: { start: CalendarDate; end: CalendarDate };
 
   $: {
-    if (streamers_name || $value) {
+    if (streamers_name || $value || selected_streamers) {
       currentDate = $value;
-      s_selected = streamers_name.map((a) =>
-        selected_streamers.find((b) => b.id == a.id) == undefined
-          ? ""
-          : "outline",
-      );
       render_timeline();
     }
+  }
+
+  function is_selected(s: Streamer, selected: Streamer[]) {
+    return selected.find((b) => b.id == s.id) !== undefined;
   }
 
   let startValue: DateValue | undefined = undefined;
@@ -134,10 +206,10 @@
 
   async function render_timeline() {
     if (selected_streamers.length === 0) {
+      groupedData = [];
       return;
     }
 
-    let idx = 0;
     let from = new Date(
       currentDate?.start?.year,
       currentDate?.start?.month - 1,
@@ -161,7 +233,6 @@
         selected_streamers,
       )
     ).map((a) => {
-      idx++;
       return { idx: new Date(a.point.created_at), value: a };
     });
 
@@ -171,21 +242,50 @@
         .point.points_value,
     }));
 
-    y = selected_streamers.map((a) => {
-      const copied_s: Streamer = JSON.parse(JSON.stringify(a));
-      const lv = get_last_value(copied_s.id);
-      return (d: PointData) =>
-        copied_s.id == d.value.point.channel_id
-          ? d.value.point.points_value
-          : lv;
-    });
+    // Group data by streamer to prevent line interleaving
+    const dataByStreamer = new Map<number, PointData[]>();
+    for (const point of timeline) {
+      const streamerId = point.value.point.channel_id;
+      if (!dataByStreamer.has(streamerId)) {
+        dataByStreamer.set(streamerId, []);
+      }
+      dataByStreamer.get(streamerId)!.push(point);
+    }
+
+    // Build grouped data array with colors
+    groupedData = selected_streamers.map((s) => ({
+      streamerId: s.id,
+      streamerName: s.name,
+      color: getStreamerColor(s.id),
+      data: dataByStreamer.get(s.id) ?? [],
+    }));
+
+    // Update points today for all streamers
+    const todayMap = new Map<number, number>();
+    for (const s of streamers_name) {
+      const sData = dataByStreamer.get(s.id);
+      if (sData) {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const filtered = sData.filter((d) => d.idx >= today);
+        if (filtered.length >= 2) {
+          todayMap.set(
+            s.id,
+            filtered[filtered.length - 1].value.point.points_value -
+              filtered[0].value.point.points_value,
+          );
+        }
+      }
+    }
+    points_today = todayMap;
   }
 
   function toggle_select(s: Streamer) {
-    const before = selected_streamers.length;
-    selected_streamers = selected_streamers.filter((a) => a.id != s.id);
-    if (before == selected_streamers.length) {
-      selected_streamers.push(s);
+    const isSelected = selected_streamers.some((a) => a.id === s.id);
+    if (isSelected) {
+      selected_streamers = selected_streamers.filter((a) => a.id !== s.id);
+    } else {
+      selected_streamers = [...selected_streamers, s];
     }
   }
 
@@ -200,13 +300,13 @@
 
 <div class="flex flex-col">
   <div class="flex flex-col">
-    <div class="flex flex-row">
-      <div class="flex- w-32">
+    <div class="flex flex-col md:flex-row gap-4">
+      <div class="w-full md:w-48 flex flex-col gap-2">
         <Select.Root
           selected={sort_selection}
           onSelectedChange={sort_streamers}
         >
-          <Select.Trigger>
+          <Select.Trigger class="w-full">
             <Select.Value placeholder="Points" />
           </Select.Trigger>
           <Select.Content>
@@ -214,22 +314,56 @@
             <Select.Item value="Ascending">Ascending</Select.Item>
           </Select.Content>
         </Select.Root>
-        {#each streamers_name as s, index}
-          <Button
-            variant={s_selected[index]}
-            class="min-w-full my-2"
-            on:click={() => toggle_select(s)}>{s.name}</Button
-          >
-        {/each}
+        <div class="flex flex-wrap md:flex-col gap-2 md:gap-3">
+          {#each streamers_name as s, index}
+            <Button
+              variant="outline"
+              class="flex flex-col items-start gap-1 h-auto py-3 px-4 flex-1 min-w-[140px] md:min-w-0 md:w-full border-2 transition-all hover:scale-[1.02]"
+              style={is_selected(s, selected_streamers) ? `border-color: ${getStreamerColor(s.id)}; background-color: ${getStreamerColor(s.id)}15;` : 'border-color: var(--border);'}
+              on:click={() => toggle_select(s)}
+            >
+              <div class="flex items-center justify-between w-full gap-2">
+                <span class="font-bold truncate min-w-0 flex-1 text-left"
+                  >{s.name}</span
+                >
+                <div class="flex gap-1 shrink-0 items-center">
+                  {#if watching_now.includes(s.name)}
+                    <Pickaxe class="h-4 w-4 text-violet-500 animate-mine" />
+                  {:else if s.data.info.live}
+                    <!-- <Tv class="h-4 w-4 text-green-500" /> -->
+                    <div class="h-2 w-2 rounded-full bg-green-500 animate-pulse"></div>
+                  {/if}
+                </div>
+              </div>
+              <div class="flex items-center gap-1 text-xs opacity-80">
+                <Coins class="h-3 w-3" />
+                <span>{s.points.toLocaleString()} total</span>
+              </div>
+              {#if points_today.get(s.id)}
+                <div
+                  class="w-full text-right text-[10px] font-medium text-green-600 dark:text-green-400"
+                >
+                  +{points_today.get(s.id)?.toLocaleString()} today
+                </div>
+              {:else}
+                <div
+                  class="w-full text-[10px] font-medium text-gray-600 dark:text-gray-400"
+                >
+                  --
+                </div>
+              {/if}
+            </Button>
+          {/each}
+        </div>
       </div>
-      <div class="flex-1 mx-10">
+      <div class="flex-1 mx-0 md:mx-10 overflow-hidden">
         <div class="flex flex-row m-0">
           <Popover.Root openFocus>
             <Popover.Trigger asChild let:builder>
               <Button
                 variant="outline"
                 class={cn(
-                  "w-[300px] justify-start text-left font-normal",
+                  "w-full max-w-[300px] justify-start text-left font-normal",
                   !currentDate && "text-muted-foreground",
                 )}
                 builders={[builder]}
@@ -261,24 +395,45 @@
             </Popover.Content>
           </Popover.Root>
         </div>
-        <VisXYContainer data={timeline} class="mt-4" {margin} height={500}>
+        <VisXYContainer class="mt-4" {margin} height={500}>
           <VisTooltip
             horizontalShift={50}
             verticalShift={50}
             verticalPlacement="top"
           />
-          <VisLine {x} {y} curveType="linear" lineWidth={3} />
+          {#each groupedData as group (group.streamerId)}
+            <VisLine
+              data={group.data}
+              {x}
+              {y}
+              curveType="linear"
+              lineWidth={2}
+              color={group.color}
+            />
+          {/each}
           <VisAxis
             type="x"
             label="Time"
             tickFormat={(t) => new Date(t).toLocaleString()}
             gridLine={false}
             labelMargin={20}
+            data={timeline}
           />
-          <VisAxis type="y" label="Points" />
-          <VisCrosshair {template} hideWhenFarFromPointer={false} {x} {y} />
+          <VisAxis type="y" label="Points" data={timeline} />
+          <VisCrosshair
+            {template}
+            hideWhenFarFromPointer={true}
+            {x}
+            {y}
+            data={timeline}
+          />
         </VisXYContainer>
-        <VisBulletLegend items={selected_streamers} />
+        <VisBulletLegend
+          items={groupedData.map((g) => ({
+            name: g.streamerName,
+            color: g.color,
+          }))}
+        />
       </div>
     </div>
   </div>

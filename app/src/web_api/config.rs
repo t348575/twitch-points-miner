@@ -27,6 +27,10 @@ pub fn build(state: ApiState) -> RouterBuild {
         .route("/streamer/:name", post(update_streamer_config))
         .route("/watch_priority", get(get_watch_priority))
         .route("/watch_priority/", post(update_watch_priority))
+        .route("/max_watching", get(get_max_watching))
+        .route("/max_watching/", post(update_max_watching))
+        .route("/watch_streak", get(get_watch_streak))
+        .route("/watch_streak/", post(update_watch_streak))
         .with_state(state);
 
     let schemas = vec![AddUpdatePreset::schema()];
@@ -37,7 +41,11 @@ pub fn build(state: ApiState) -> RouterBuild {
         __path_remove_preset,
         __path_get_watch_priority,
         __path_update_watch_priority,
-        __path_update_streamer_config
+        __path_update_streamer_config,
+        __path_get_max_watching,
+        __path_update_max_watching,
+        __path_get_watch_streak,
+        __path_update_watch_streak
     );
 
     (routes, schemas, paths)
@@ -68,6 +76,64 @@ impl WebApiError for ConfigError {
 
         (status_code, self.to_string()).into_response()
     }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/config/max_watching",
+    responses(
+        (status = 200, description = "Get the maximum number of streams to watch", body = usize),
+    )
+)]
+async fn get_max_watching(State(data): State<ApiState>) -> Json<usize> {
+    Json(data.read().await.config.max_watching.unwrap_or(2))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/config/max_watching/",
+    responses(
+        (status = 200, description = "Successfully updated max_watching"),
+    ),
+    request_body = usize
+)]
+async fn update_max_watching(
+    State(data): State<ApiState>,
+    Json(max_watching): Json<usize>,
+) -> Result<(), ApiError> {
+    let mut writer = data.write().await;
+    writer.config.max_watching = Some(max_watching);
+    writer.save_config("Update max watching").await?;
+    Ok(())
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/config/watch_streak",
+    responses(
+        (status = 200, description = "Whether watch streak farming is enabled", body = bool),
+    )
+)]
+async fn get_watch_streak(State(data): State<ApiState>) -> Json<bool> {
+    Json(data.read().await.config.watch_streak.unwrap_or(true))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/config/watch_streak/",
+    responses(
+        (status = 200, description = "Successfully updated watch_streak"),
+    ),
+    request_body = bool
+)]
+async fn update_watch_streak(
+    State(data): State<ApiState>,
+    Json(watch_streak): Json<bool>,
+) -> Result<(), ApiError> {
+    let mut writer = data.write().await;
+    writer.config.watch_streak = Some(watch_streak);
+    writer.save_config("Update watch streak").await?;
+    Ok(())
 }
 
 #[utoipa::path(

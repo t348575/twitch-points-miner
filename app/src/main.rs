@@ -6,7 +6,7 @@ use common::twitch::ws::{Request, WsPool};
 use eyre::{eyre, Context, Result};
 use tokio::sync::RwLock;
 use tokio::{fs, spawn};
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::fmt::format::{Compact, DefaultFields};
 use tracing_subscriber::fmt::time::ChronoLocal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -46,6 +46,39 @@ struct Args {
 
 const BASE_URL: &str = "https://twitch.tv";
 
+/// Retries a fallible async operation with exponential backoff.
+///
+/// Startup only makes a handful of Twitch API calls, so a transient network
+/// hiccup (slow DNS, a stalled connection, etc.) shouldn't crash the whole
+/// process. Retries `attempts` times, doubling the delay each time starting
+/// at `initial_delay`.
+async fn retry_with_backoff<T, F, Fut>(
+    description: &str,
+    attempts: u32,
+    initial_delay: std::time::Duration,
+    mut f: F,
+) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut delay = initial_delay;
+    for attempt in 1..=attempts {
+        match f().await {
+            Ok(value) => return Ok(value),
+            Err(err) if attempt < attempts => {
+                warn!(
+                    "{description} failed (attempt {attempt}/{attempts}), retrying in {delay:?}: {err:?}"
+                );
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    unreachable!("loop always returns on the last attempt")
+}
+
 fn get_layer<S>(
     layer: tracing_subscriber::fmt::Layer<S>,
 ) -> tracing_subscriber::fmt::Layer<
@@ -63,11 +96,15 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let log_level = std::env::var("LOG").unwrap_or("warn".to_owned());
+    let tower_level = match log_level.as_str() {
+        "warn" | "error" => log_level.as_str(),
+        _ => "info",
+    };
     let tracing_opts = tracing_subscriber::registry()
         .with(
             EnvFilter::new(format!("twitch_points_miner={log_level}"))
                 .add_directive(format!("common={log_level}").parse()?)
-                .add_directive(format!("tower_http::trace={log_level}").parse()?),
+                .add_directive(format!("tower_http::trace={tower_level}").parse()?),
         )
         .with(get_layer(tracing_subscriber::fmt::layer()));
 
@@ -143,14 +180,17 @@ async fn main() -> Result<()> {
     let (mut analytics, analytics_tx) = Analytics::new(&args.analytics_db)?;
 
     let channels = channels.into_iter().flatten().collect::<Vec<_>>();
-    let points = gql
-        .get_channel_points(
-            &channels
-                .iter()
-                .map(|x| x.1.channel_name.as_str())
-                .collect::<Vec<_>>(),
-        )
-        .await?;
+    let channel_names = channels
+        .iter()
+        .map(|x| x.1.channel_name.as_str())
+        .collect::<Vec<_>>();
+    let points = retry_with_backoff(
+        "Get channel points",
+        3,
+        std::time::Duration::from_secs(2),
+        || gql.get_channel_points(&channel_names),
+    )
+    .await?;
 
     for (c, p) in channels.iter().zip(&points) {
         let id = c.0.as_str().parse::<i32>()?;

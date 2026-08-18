@@ -10,3 +10,6 @@ dist
 tailscale
 twitch-points-miner.log
 temp
+docker-compose.yml
+data/
+*.tar

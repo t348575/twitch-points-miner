@@ -11,7 +11,10 @@ use crate::{
 use super::{CHROME_USER_AGENT, CLIENT_ID};
 
 pub async fn get_spade_url(streamer: &str, base_url: &str) -> Result<String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap();
     let page_text = client
         .get(&format!("{base_url}/{streamer}"))
         .header("User-Agent", CHROME_USER_AGENT)
@@ -32,7 +35,10 @@ pub async fn get_spade_url(streamer: &str, base_url: &str) -> Result<String> {
                     let prefix = format!("{base_url}/");
                     #[cfg(not(feature = "testing"))]
                     let prefix = "";
-                    let client = reqwest::Client::new();
+                    let client = reqwest::Client::builder()
+                        .timeout(std::time::Duration::from_secs(10))
+                        .build()
+                        .unwrap();
                     let text = client
                         .get(&format!("{prefix}{uri}{pattern_js}.js"))
                         .header("User-Agent", CHROME_USER_AGENT)
@@ -67,13 +73,26 @@ pub async fn get_spade_url(streamer: &str, base_url: &str) -> Result<String> {
     {
         Ok(s) => Ok(s),
         Err(_) => {
-            inner(
+            match inner(
                 &page_text,
                 "https://assets.twitch.tv/config/settings.",
                 #[cfg(feature = "testing")]
                 base_url,
             )
-            .await
+            .await {
+                Ok(s) => Ok(s),
+                Err(_) => {
+                    match inner(
+                        &page_text,
+                        "config/settings.",
+                        #[cfg(feature = "testing")]
+                        base_url,
+                    ).await {
+                        Ok(s) => Ok(s),
+                        Err(_) => Ok("https://spade.twitch.tv/".to_owned())
+                    }
+                }
+            }
         }
     }
 }
@@ -100,7 +119,10 @@ pub async fn set_viewership(
 
     let body = serde_json::to_string(&[watch_event])?;
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap();
     let res = client
         .post(spade_url)
         .header("Client-Id", CLIENT_ID)

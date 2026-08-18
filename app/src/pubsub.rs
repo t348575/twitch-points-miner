@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ops::Deref,
     str::FromStr,
     sync::Arc,
@@ -60,6 +60,8 @@ pub struct PubSub {
     #[serde(skip)]
     pub analytics_tx: Sender<analytics::Request>,
     pub watching: Vec<StreamerState>,
+    #[serde(skip)]
+    pub raids: HashSet<String>,
 }
 
 impl PubSub {
@@ -142,6 +144,7 @@ impl PubSub {
             gql,
             base_url: base_url.to_string(),
             watching: Vec::new(),
+            raids: HashSet::new(),
         })
     }
 
@@ -165,6 +168,7 @@ impl PubSub {
             base_url: Default::default(),
             ws_tx,
             watching: Default::default(),
+            raids: HashSet::new(),
         }
     }
 
@@ -200,38 +204,70 @@ impl PubSub {
         spawn(update_and_claim_points::run(pubsub.clone(), gql.clone()));
         spawn(update_spade_url::run(pubsub.clone()));
 
-        let mut deferred_updates = Vec::new();
-        while let Ok(data) = ws_rx.recv_async().await {
-            if let TopicData::VideoPlaybackById { topic, reply } = &data {
-                if let VideoPlaybackReply::StreamUp {
-                    server_time: _,
-                    play_delay: _,
-                } = reply.deref()
-                {
-                    _ = tx_watch_streams
-                        .send_async(UserId::from_str(&topic.channel_id.to_string()).unwrap())
-                        .await;
-                }
-            }
+        let mut deferred_updates: Vec<(u32, Instant)> = Vec::new();
+        let mut interval = tokio::time::interval(Duration::from_secs(10));
+        let mut metadata_poll_interval = tokio::time::interval(Duration::from_secs(600));
 
-            match pubsub.write().await.handle_response(data).await {
-                Ok(Some(channel_id)) => deferred_updates.push((channel_id, Instant::now())),
-                Ok(None) => {}
-                Err(err) => warn!("Error handling response: {err:?}"),
-            }
+        loop {
+            tokio::select! {
+                data = ws_rx.recv_async() => {
+                    let data = match data {
+                        Ok(data) => data,
+                        Err(_) => break,
+                    };
 
-            for (channel_id, time) in deferred_updates.drain(..).collect::<Vec<_>>() {
-                if time.elapsed() > Duration::from_secs(30) {
-                    if let Err(err) = pubsub
-                        .write()
-                        .await
-                        .update_stream_metadata(channel_id)
-                        .await
-                    {
-                        warn!("Error updating stream metadata: {err:?}");
+                    if let TopicData::VideoPlaybackById { topic, reply } = &data {
+                        if let VideoPlaybackReply::StreamUp {
+                            server_time: _,
+                            play_delay: _,
+                        } = reply.deref()
+                        {
+                            _ = tx_watch_streams
+                                .send_async(UserId::from_str(&topic.channel_id.to_string()).unwrap())
+                                .await;
+                        }
                     }
-                } else {
-                    deferred_updates.push((channel_id, time))
+
+                    match pubsub.write().await.handle_response(data).await {
+                        Ok(Some(channel_id)) => deferred_updates.push((channel_id, Instant::now())),
+                        Ok(None) => {}
+                        Err(err) => warn!("Error handling response: {err:?}"),
+                    }
+                }
+                _ = interval.tick() => {
+                    let mut ready = Vec::new();
+                    deferred_updates.retain(|(channel_id, time)| {
+                        if time.elapsed() > Duration::from_secs(30) {
+                            ready.push(*channel_id);
+                            false
+                        } else {
+                            true
+                        }
+                    });
+
+                    for channel_id in ready {
+                        let pubsub = pubsub.clone();
+                        spawn(async move {
+                            if let Err(err) = update_stream_metadata(pubsub, channel_id).await {
+                                warn!("Error updating stream metadata: {err:?}");
+                            }
+                        });
+                    }
+                }
+                _ = metadata_poll_interval.tick() => {
+                    let streamer_ids = {
+                        let reader = pubsub.read().await;
+                        reader.streamers.keys().cloned().collect::<Vec<_>>()
+                    };
+                    for id in streamer_ids {
+                        let pubsub = pubsub.clone();
+                        spawn(async move {
+                            let channel_id = id.as_str().parse().unwrap();
+                            if let Err(err) = update_stream_metadata(pubsub, channel_id).await {
+                                warn!("Error updating stream metadata (periodic): {err:?}");
+                            }
+                        });
+                    }
                 }
             }
         }
@@ -301,20 +337,67 @@ impl PubSub {
             TopicData::CommunityPointsUserV1 { topic, reply } => {
                 debug!("Got CommunityPointsUserV1 {:#?}", topic);
 
-                if let CommunityPointsUserV1Reply::ClaimClaimed {
-                    timestamp: _,
-                    claim,
-                } = *reply
-                {
-                    if claim.user_id.as_str().ne(&self.user_id) {
-                        return Ok(None);
-                    };
+                match *reply {
+                    CommunityPointsUserV1Reply::PointsEarned {
+                        timestamp: _,
+                        channel_id,
+                        point_gain,
+                        balance,
+                    } => {
+                        debug!(
+                            "Points earned for channel {}, user {}, points {}, reason: {}",
+                            channel_id, point_gain.user_id, point_gain.total_points, point_gain.reason_code
+                        );
+                        
+                        if point_gain.user_id.as_str().ne(&self.user_id) {
+                            debug!("Points for user {} is not for this user, ignoring", point_gain.user_id);
+                            return Ok(None);
+                        }
 
-                    if self.streamers.contains_key(&claim.channel_id) {
-                        debug!("Channel points updated for {}", claim.channel_id);
-                        let s = self.streamers.get_mut(&claim.channel_id).unwrap();
-                        s.points = claim.point_gain.total_points as u32;
-                        s.last_points_refresh = Instant::now();
+                        if self.streamers.contains_key(channel_id.as_str()) {
+                            let s = self.streamers.get_mut(channel_id.as_str()).unwrap();
+                            s.points = balance.balance as u32;
+                            s.last_points_refresh = Instant::now();
+                            debug!("Channel points updated by {} via earn for {}", balance.balance, channel_id);
+
+                            // Only track CLAIM events in analytics, as WATCH points are tracked separately
+                            if point_gain.reason_code == "CLAIM" {
+                                let channel_id_int = channel_id.as_str().parse::<i32>()?;
+                                self.analytics_tx
+                                    .send_async(Box::new(move |analytics| {
+                                        analytics.insert_points(
+                                            channel_id_int,
+                                            balance.balance as i32,
+                                            PointsInfo::CommunityPointsClaimed,
+                                        )
+                                    }))
+                                    .await
+                                    .map_err(|_| eyre!("Failed to send analytics"))?;
+                            }
+                        }
+                    }
+                    CommunityPointsUserV1Reply::ClaimClaimed {
+                        timestamp: _,
+                        claim,
+                    } => {
+                        debug!(
+                            "Claim claimed for channel {}, points {}. Full claim {:#?}",
+                            claim.channel_id, claim.point_gain.total_points, claim
+                        );
+                        
+                        if claim.user_id.as_str().ne(&self.user_id) {
+                            debug!("Claim for user {} is not for this user {}, ignoring", claim.user_id, self.user_id);
+                            return Ok(None);
+                        }
+
+                        if self.streamers.contains_key(&claim.channel_id) {
+                            debug!("Channel points updated via claim by {} for {}", claim.point_gain.total_points, claim.channel_id);
+                            let s = self.streamers.get_mut(&claim.channel_id).unwrap();
+                            s.last_points_refresh = Instant::now();
+                        }
+                    }
+                    _ => {
+                        debug!("Community points event is not a claim/points earned event, ignoring. Reply: {:#?}", reply);
                     }
                 }
             }
@@ -324,11 +407,21 @@ impl PubSub {
                 if let RaidReply::RaidUpdateV2(raid) = *reply {
                     if let Some(s) = self.streamers.get(&raid.source_id) {
                         if s.config.0.read().unwrap().config.follow_raid {
-                            info!(
-                                "Joining raid for {} to {}",
-                                s.info.channel_name, raid.target_login
-                            );
-                            self.gql.join_raid(&raid.id).await.context("Raiding user")?;
+                            if self.raids.insert(raid.id.clone()) {
+                                info!(
+                                    "Joining raid for {} to {}",
+                                    s.info.channel_name, raid.target_login
+                                );
+                                let gql = self.gql.clone();
+                                let raid_id = raid.id.clone();
+                                spawn(async move {
+                                    if let Err(err) = gql.join_raid(&raid_id).await {
+                                        warn!("Error joining raid: {err:?}");
+                                    }
+                                });
+                            } else {
+                                debug!("Already joined raid {}", raid.id);
+                            }
                         }
                     }
                 }
@@ -336,19 +429,6 @@ impl PubSub {
             _ => {}
         }
         Ok(None)
-    }
-
-    async fn update_stream_metadata(&mut self, channel_id: u32) -> Result<()> {
-        let streamer = self
-            .streamers
-            .get_mut(&UserId::from_str(&channel_id.to_string()).unwrap())
-            .context("Streamer does not exist")?;
-        let metadata = self
-            .gql
-            .streamer_metadata(&[streamer.info.channel_name.as_str()])
-            .await?;
-        streamer.info = metadata[0].clone().unwrap().1;
-        Ok(())
     }
 
     async fn upsert_prediction(&mut self, streamer: &UserId, event: &Event) -> Result<()> {
@@ -510,15 +590,18 @@ impl PubSub {
                 .make_prediction(points_to_bet, event_id, &outcome_id, self.simulate)
                 .await
                 .context("Make prediction")?;
-            let s = self.streamers.get_mut(streamer).unwrap();
-            s.predictions.get_mut(event_id).unwrap().1 = true;
 
-            let channel_id = streamer.as_str().parse::<i32>()?;
             let points = self
                 .gql
                 .get_channel_points(&[s.info.channel_name.as_str()])
                 .await?;
 
+            let s = self.streamers.get_mut(streamer).unwrap();
+            s.predictions.get_mut(event_id).unwrap().1 = true;
+            s.points = points[0].0;
+            s.last_points_refresh = Instant::now();
+
+            let channel_id = streamer.as_str().parse::<i32>()?;
             let event_id = event_id.to_owned();
             self.analytics_tx
                 .send_async(Box::new(move |analytics| {
@@ -536,6 +619,27 @@ impl PubSub {
         }
         Ok(())
     }
+}
+
+async fn update_stream_metadata(pubsub: Arc<RwLock<PubSub>>, channel_id: u32) -> Result<()> {
+    let (name, gql) = {
+        let reader = pubsub.read().await;
+        let streamer = reader
+            .streamers
+            .get(&UserId::from_str(&channel_id.to_string()).unwrap())
+            .context("Streamer does not exist")?;
+        (streamer.info.channel_name.clone(), reader.gql.clone())
+    };
+
+    let metadata = gql.streamer_metadata(&[name.as_str()]).await?;
+
+    let mut writer = pubsub.write().await;
+    let streamer = writer
+        .streamers
+        .get_mut(&UserId::from_str(&channel_id.to_string()).unwrap())
+        .context("Streamer does not exist")?;
+    streamer.info = metadata[0].clone().unwrap().1;
+    Ok(())
 }
 
 pub fn prediction_logic(streamer: &StreamerState, event_id: &str) -> Result<Option<(String, u32)>> {
@@ -703,8 +807,8 @@ mod watch_stream {
         {
             pubsub.write().await.watching = watch_items.iter().map(|x| x.1.clone()).collect();
         }
-        for (id, streamer) in watch_items.into_iter().take(2) {
-            debug!("Watching {}", streamer.info.channel_name);
+        for (id, streamer) in watch_items.into_iter().take(config.max_watching.unwrap_or(2)) {
+            trace!("Watching {}", streamer.info.channel_name);
             api::set_viewership(
                 user_name.clone(),
                 user_id,
@@ -714,7 +818,7 @@ mod watch_stream {
             )
             .await
             .context(format!(
-                "Could not set viewership {}",
+                "Could not set viewership. Not watching {}",
                 streamer.info.channel_name
             ))?;
         }
@@ -724,14 +828,15 @@ mod watch_stream {
     }
 
     pub async fn run(pubsub: Arc<RwLock<PubSub>>, live_event: Receiver<UserId>) {
-        let use_watch_streak = {
-            let reader = pubsub.read().await;
-            reader.config.watch_streak.unwrap_or(true)
-        };
-
         let mut watch_streak = Vec::new();
 
         loop {
+            // Re-read each iteration so the web API can toggle this without a restart
+            let use_watch_streak = {
+                let reader = pubsub.read().await;
+                reader.config.watch_streak.unwrap_or(true)
+            };
+
             if let Err(err) = inner(&pubsub, &mut watch_streak, use_watch_streak, &live_event).await
             {
                 if err.to_string() != "Spade URL not set" {
@@ -752,6 +857,7 @@ mod update_and_claim_points {
     use super::*;
 
     async fn inner(pubsub: &Arc<RwLock<PubSub>>, gql: &gql::Client) -> Result<()> {
+        debug!("update_and_claim_points: checking live streamers");
         let streamer = {
             let reader = pubsub.read().await;
             reader
@@ -768,10 +874,11 @@ mod update_and_claim_points {
             .collect::<Vec<_>>();
 
         if channel_names.is_empty() {
-            sleep(Duration::from_secs(60)).await;
+            debug!("update_and_claim_points: no live streamers");
             return Ok(());
         }
 
+        debug!("update_and_claim_points: fetching points for {:?}", channel_names);
         let points = gql
             .get_channel_points(&channel_names)
             .await
@@ -779,13 +886,28 @@ mod update_and_claim_points {
 
         let mut changes = Vec::new();
         for ((points, claim), (channel_id, state)) in points.into_iter().zip(streamer) {
+            debug!(
+                "Streamer {} has {} points, claim: {:?}",
+                state.info.channel_name, points, claim
+            );
             match claim {
                 Some(claim_id) => {
                     info!(
-                        "Claiming community points bonus {}",
+                        "Claiming community points bonus {} (id: {})",
+                        state.info.channel_name, channel_id
+                    );
+                    let claimed_points = match gql.claim_points(channel_id.as_str(), &claim_id).await {
+                        Ok(p) => p,
+                        Err(err) => {
+                            error!("Error claiming points for {}: {err:?}", state.info.channel_name);
+                            continue;
+                        }
+                    };
+                    info!(
+                        "Claimed {} points for {}",
+                        claimed_points,
                         state.info.channel_name
                     );
-                    let claimed_points = gql.claim_points(channel_id.as_str(), &claim_id).await?;
                     changes.push((
                         PointsInfo::CommunityPointsClaimed,
                         claimed_points,
@@ -800,7 +922,7 @@ mod update_and_claim_points {
             let now = Instant::now();
             let mut writer = pubsub.write().await;
             for (_type, points, channel_id) in changes {
-                let edited = writer
+                let _ = writer
                     .analytics
                     .execute(|analytics| {
                         analytics.insert_points_if_updated(
@@ -810,11 +932,9 @@ mod update_and_claim_points {
                         )
                     })
                     .await?;
-                if edited {
-                    let s = writer.streamers.get_mut(&channel_id).unwrap();
-                    s.points = points;
-                    s.last_points_refresh = now
-                }
+                let s = writer.streamers.get_mut(&channel_id).unwrap();
+                s.points = points;
+                s.last_points_refresh = now;
             }
         }
         Ok(())
@@ -856,7 +976,7 @@ mod update_spade_url {
         let base_url = { pubsub.read().await.base_url.clone() };
         loop {
             if let Err(err) = inner(&pubsub, &base_url).await {
-                error!("update_and_claim_points {err}");
+                error!("update_spade_url {err}");
             }
 
             sleep(Duration::from_secs(120)).await

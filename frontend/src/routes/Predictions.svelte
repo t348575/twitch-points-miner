@@ -162,8 +162,8 @@
   }
 </script>
 
-<div class="flex flex-col">
-  <div class="w-1/2 self-center mb-4">
+<div class="flex flex-col items-center px-2">
+  <div class="w-full lg:w-3/4 xl:w-1/2 mb-4">
     <Card.Root>
       <Card.Header class="flex flex-row justify-center items-center">
         <p class="text-xl mr-2 inline">
@@ -171,7 +171,7 @@
         </p>
       </Card.Header>
       <Card.Content class={make_prediction_class}>
-        <div class="w-1/2 flex flex-row">
+        <div class="w-full md:w-3/4 flex flex-row">
           <Select.Root
             selected={selected_streamer_for_prediction}
             onSelectedChange={select_streamer_for_prediction}

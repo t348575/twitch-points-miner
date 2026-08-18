@@ -4,7 +4,7 @@
   "version": "0.1.11",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --host",
     "build": "vite build --outDir ../dist --emptyOutDir",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json"

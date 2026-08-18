@@ -46,6 +46,7 @@ export async function get_streamers(): Promise<Streamer[]> {
     });
   }
 
+  console.log("Fetched streamers:", items);
   return items;
 }
 
@@ -235,6 +236,23 @@ export async function set_watch_priority(
 ): Promise<void> {
   const { error } = await client.POST("/api/config/watch_priority/", {
     body: watch_priority,
+  });
+  if (error) {
+    throw error;
+  }
+}
+
+export async function get_max_watching(): Promise<number> {
+  const { data, error } = await client.GET("/api/config/max_watching");
+  if (error) {
+    throw error;
+  }
+  return data;
+}
+
+export async function set_max_watching(max_watching: number): Promise<void> {
+  const { error } = await client.POST("/api/config/max_watching/", {
+    body: max_watching,
   });
   if (error) {
     throw error;
